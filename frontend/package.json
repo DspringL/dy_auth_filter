@@ -18,8 +18,8 @@
     "nprogress": "^0.2.0"
   },
   "devDependencies": {
-    "vite": "^5.2.0",
-    "@vitejs/plugin-vue": "^5.0.4",
+    "vite": "^8.2.1",
+    "@vitejs/plugin-vue": "^6.0.8",
     "unplugin-auto-import": "^0.17.6",
     "unplugin-vue-components": "^0.27.0"
   }
