@@ -1,0 +1,114 @@
+# ========================================
+# 抖音带货达人自动化系统 - 全局配置
+# ========================================
+
+# CloakBrowser 配置
+cloak_browser:
+  # CloakBrowser API 地址（默认本地）
+  api_host: "http://127.0.0.1"
+  api_port: 35000
+  # 浏览器环境 ID（从 CloakBrowser 创建的浏览器环境中获取）
+  # 留空则自动创建临时环境
+  env_id: ""
+  # CDP 调试端口（CloakBrowser 启动时自动分配，也可固定）
+  cdp_port: 9222
+  # 启动超时秒数
+  launch_timeout: 30
+
+# 抖音配置
+douyin:
+  base_url: "https://www.douyin.com"
+  # Cookie 持久化路径
+  cookie_file: "data/cookies.json"
+  # 请求头 User-Agent（与 CloakBrowser 内置 UA 保持一致）
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+# 搜索配置
+search:
+  # 多个搜索关键词
+  keywords:
+    - "达人探店"
+    - "探店达人"
+  # 每个关键词抓取的最大达人数
+  max_users_per_keyword: 50
+  # 搜索结果类型：user（用户）
+  search_type: "user"
+
+  # 反爬节奏控制（太快会触发验证码）
+  anti_crawl:
+    # 导航到页面后等待初始 XHR 的时间（秒）
+    page_load_wait: 5
+    # 首次 XHR 响应后额外等待（秒），让页面完全渲染
+    render_wait: 4
+    # 用户搜索翻页滚动间隔（秒，随机范围）
+    scroll_interval_min: 3.0
+    scroll_interval_max: 6.0
+    # 多关键词之间的间隔（秒，随机范围）
+    keyword_interval_min: 8.0
+    keyword_interval_max: 15.0
+    # 视频搜索：热身页等待时间（秒）
+    video_warmup_wait: 8
+    # 视频搜索：预热帧滚动间隔（秒）
+    video_scroll_interval_min: 4.0
+    video_scroll_interval_max: 7.0
+    # 验证码检测：出现验证码后等待时间（秒）
+    captcha_wait: 90
+    # 验证码最大重试次数
+    captcha_max_retry: 3
+
+# 达人筛选标准
+filter:
+  # 粉丝数下限（0 表示不限）
+  min_followers: 1000
+  # 粉丝数上限（0 表示不限）
+  max_followers: 0
+  # 总点赞数下限
+  min_total_likes: 1000
+  # 是否必须有带货橱窗
+  require_shop_window: false
+  # 最近作品数下限
+  min_recent_videos: 3
+
+# 私信配置
+dm:
+  # 私信模板（必须是单条消息，抖音限制对方回复前只能发一条）
+  # {nickname} 会被替换为达人昵称，不要换行
+  template: "你好 {nickname}，我是轻酱啤酒商务负责人，看了您的内容非常专业，想和您洽谈品牌合作，有意向请回复我！"
+  # 每日最大发送数量（防封号）
+  daily_limit: 20
+  # 每条私信之间的间隔（秒），随机范围
+  interval_min: 10
+  interval_max: 30
+  # 私信发送记录文件
+  sent_record_file: "data/dm_sent.json"
+
+# 评论配置
+comment:
+  # 评论模板（单条，不超过 150 字，不能有换行）
+  template: "你好 {nickname}，我是轻酱啤酒商务负责人，看了您的内容非常专业，想和您洽谈品牌合作，有意向请私信我！"
+  # 每日最大评论数量
+  daily_limit: 100
+  # 每条评论之间的间隔（秒），随机范围
+  interval_min: 10
+  interval_max: 30
+  # 评论记录文件
+  sent_record_file: "data/comment_sent.json"
+  # 抓取达人最新作品数量（取第1条）
+  latest_video_count: 1
+
+# 数据库配置
+database:
+  path: "data/douyin.db"
+
+# 后端 API 配置
+api:
+  host: "127.0.0.1"
+  port: 8000
+  reload: true
+
+# 日志配置
+logging:
+  level: "INFO"
+  file: "logs/app.log"
+  max_bytes: 10485760   # 10MB
+  backup_count: 5

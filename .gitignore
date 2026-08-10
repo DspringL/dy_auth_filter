@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 数据文件（含敏感信息，不上传）
+data/cookies.json
+data/storage_state.json
+data/browser_profile/
+data/dm_sent.json
+data/comment_sent.json
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# 日志
+logs/
+*.log
+
+# 调试截图
+/tmp/*.png
+
+# Node.js
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# 系统
+Thumbs.db
+ehthumbs.db
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# 爬虫 JS 缓存
+data/webmssdk.js
+data/sign_helper.js
+
+# 临时文件
+*.tmp
+*.bak
+patch_search.py

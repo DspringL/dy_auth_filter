@@ -1,0 +1,26 @@
+{
+  "name": "douyin-kol-admin",
+  "version": "1.0.0",
+  "description": "抖音带货达人管理后台",
+  "scripts": {
+    "dev": "vite --port 5173",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "vue": "^3.4.0",
+    "vue-router": "^4.3.0",
+    "pinia": "^2.1.7",
+    "element-plus": "^2.7.0",
+    "@element-plus/icons-vue": "^2.3.1",
+    "axios": "^1.7.0",
+    "dayjs": "^1.11.11",
+    "nprogress": "^0.2.0"
+  },
+  "devDependencies": {
+    "vite": "^5.2.0",
+    "@vitejs/plugin-vue": "^5.0.4",
+    "unplugin-auto-import": "^0.17.6",
+    "unplugin-vue-components": "^0.27.0"
+  }
+}
