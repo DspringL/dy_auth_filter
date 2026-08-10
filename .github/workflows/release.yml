@@ -3,54 +3,89 @@ name: 跨平台桌面端构建与发布
 on:
   push:
     tags:
-      - 'v*'           # 打 tag 时触发，如 v1.0.0
-  workflow_dispatch:   # 支持手动触发
+      - 'v*'          # 打 tag 时自动触发全平台构建
 
+  workflow_dispatch:  # 手动触发，可选平台
+    inputs:
+      platform:
+        description: '选择构建平台'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all                  # macOS ARM + macOS Intel + Windows
+          - macos-arm            # macOS Apple Silicon (M1/M2/M3)
+          - macos-intel          # macOS Intel (x86_64)
+          - windows              # Windows x64
+      release_tag:
+        description: '发布到 Release 的 tag（如 v1.0.3），留空则只上传 artifact'
+        required: false
+        default: ''
+      draft:
+        description: '发布为草稿（Draft）？'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 通用构建步骤（复用于 tag 和手动触发）
+# ──────────────────────────────────────────────────────────────────────────────
 jobs:
-  # ────────────────────────────────────────────────────────────────────────────
-  # 正式版多平台构建 + 发布 Release（仅 tag 触发）
-  # ────────────────────────────────────────────────────────────────────────────
   build:
-    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
-      contents: write   # 必须有写权限才能创建 Release 和上传资产
+      contents: write   # 创建/更新 Release 需要写权限
+
     strategy:
       fail-fast: false
       matrix:
         include:
           # macOS Apple Silicon (M1/M2/M3)
           - platform: macos-latest
+            label: macos-arm
             args: '--target aarch64-apple-darwin'
             rust_target: aarch64-apple-darwin
+
           # macOS Intel
           - platform: macos-latest
+            label: macos-intel
             args: '--target x86_64-apple-darwin'
             rust_target: x86_64-apple-darwin
+
           # Windows x64
           - platform: windows-latest
+            label: windows
             args: ''
             rust_target: x86_64-pc-windows-msvc
+
+    # 过滤：手动触发时根据 platform 输入决定跑哪些 job
+    if: |
+      startsWith(github.ref, 'refs/tags/v') ||
+      inputs.platform == 'all' ||
+      inputs.platform == matrix.label
 
     runs-on: ${{ matrix.platform }}
 
     steps:
-      # ── 检出代码 ─────────────────────────────────────────────────────────────
+      # ── 检出代码 ──────────────────────────────────────────────────────────────
       - name: 检出代码
         uses: actions/checkout@v4
 
-      # ── 配置 Node.js ──────────────────────────────────────────────────────────
+      # ── Node.js ───────────────────────────────────────────────────────────────
       - name: 配置 Node.js
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
 
-      # ── 配置 Python（用于打包后端 sidecar） ────────────────────────────────────
+      # ── Python ────────────────────────────────────────────────────────────────
       - name: 配置 Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      # ── 配置 Rust stable ─────────────────────────────────────────────────────
+      # ── Rust ──────────────────────────────────────────────────────────────────
       - name: 配置 Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -61,95 +96,10 @@ jobs:
         with:
           workspaces: './frontend/src-tauri -> target'
 
-      # ── 安装 Python 后端依赖 + 打包为 sidecar ──────────────────────────────────
-      # TARGET_TRIPLE 告诉 build_backend.py 输出哪个平台的 sidecar 文件名
-      # macOS 交叉编译时 runner 架构与目标架构不同，必须显式传入
+      # ── 打包 Python 后端 sidecar ──────────────────────────────────────────────
       - name: 安装 Python 依赖并打包后端
         env:
           TARGET_TRIPLE: ${{ matrix.rust_target }}
-          PYTHONUTF8: "1"          # Windows: 强制 Python I/O 使用 UTF-8
-          PYTHONIOENCODING: "utf-8"
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
-          python build_backend.py
-
-      # ── 安装前端依赖 ──────────────────────────────────────────────────────────
-      - name: 安装前端依赖
-        working-directory: ./frontend
-        run: npm install
-
-      # ── 构建 Tauri 桌面应用并发布 Release ────────────────────────────────────
-      - name: 构建 Tauri 应用并上传到 Release
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          projectPath: ./frontend
-          args: ${{ matrix.args }}
-          tagName: ${{ github.ref_name }}
-          releaseName: '抖音达人系统 ${{ github.ref_name }}'
-          releaseBody: |
-            ## 下载说明
-
-            | 平台 | 文件 | 说明 |
-            |------|------|------|
-            | macOS (Apple Silicon) | `*_aarch64.dmg` | M1/M2/M3 芯片 |
-            | macOS (Intel)         | `*_x64.dmg`     | Intel 芯片 |
-            | Windows               | `*_x64-setup.exe` | Windows 10/11 |
-            | Linux                 | `*_amd64.AppImage` | Ubuntu/Debian |
-
-            首次运行前请阅读 README.md 中的安装说明。
-          releaseDraft: true
-          prerelease: false
-
-  # ────────────────────────────────────────────────────────────────────────────
-  # 开发版构建（手动触发，仅 Linux debug，上传为 workflow artifact）
-  # ────────────────────────────────────────────────────────────────────────────
-  dev-build:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: read
-
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 配置 Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-
-      - name: 配置 Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: 配置 Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: 缓存 Rust 编译产物
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: './frontend/src-tauri -> target'
-
-      - name: 安装 Linux 系统依赖
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libssl-dev \
-            pkg-config \
-            xdg-utils
-
-      - name: 安装 Python 依赖并打包后端
-        env:
-          TARGET_TRIPLE: x86_64-unknown-linux-gnu
           PYTHONUTF8: "1"
           PYTHONIOENCODING: "utf-8"
         run: |
@@ -158,20 +108,83 @@ jobs:
           pip install pyinstaller
           python build_backend.py
 
+      # ── 前端依赖 ──────────────────────────────────────────────────────────────
       - name: 安装前端依赖
         working-directory: ./frontend
         run: npm install
 
-      - name: 构建调试版（不发布 Release）
+      # ── 确定 tag 和是否草稿 ───────────────────────────────────────────────────
+      - name: 计算发布参数
+        id: params
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            # tag 触发：直接使用 git tag，正式发布（非草稿）
+            echo "tag_name=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "release_name=抖音达人系统 ${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "draft=false"  >> $GITHUB_OUTPUT
+            echo "upload_release=true" >> $GITHUB_OUTPUT
+          elif [[ -n "${{ inputs.release_tag }}" ]]; then
+            # 手动触发且填写了 tag：上传到指定 Release
+            echo "tag_name=${{ inputs.release_tag }}" >> $GITHUB_OUTPUT
+            echo "release_name=抖音达人系统 ${{ inputs.release_tag }}" >> $GITHUB_OUTPUT
+            echo "draft=${{ inputs.draft }}"  >> $GITHUB_OUTPUT
+            echo "upload_release=true" >> $GITHUB_OUTPUT
+          else
+            # 手动触发但没填 tag：只上传 workflow artifact，不创建 Release
+            echo "tag_name=" >> $GITHUB_OUTPUT
+            echo "release_name=" >> $GITHUB_OUTPUT
+            echo "draft=false"  >> $GITHUB_OUTPUT
+            echo "upload_release=false" >> $GITHUB_OUTPUT
+          fi
+
+      # ── 构建 + 上传到 Release（有 tag 时）─────────────────────────────────────
+      - name: 构建 Tauri 应用并发布到 Release
+        if: steps.params.outputs.upload_release == 'true'
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: ./frontend
-          args: '--debug'
-          uploadWorkflowArtifacts: true
+          args: ${{ matrix.args }}
+          tagName: ${{ steps.params.outputs.tag_name }}
+          releaseName: ${{ steps.params.outputs.release_name }}
+          releaseBody: |
+            ## 下载安装
 
-      - name: 说明产物位置
+            | 平台 | 文件名 | 说明 |
+            |------|--------|------|
+            | macOS Apple Silicon | `*_aarch64.dmg` | M1/M2/M3 芯片，双击安装 |
+            | macOS Intel | `*_x64.dmg` | Intel 芯片，双击安装 |
+            | Windows | `*_x64-setup.exe` | Windows 10/11，管理员运行 |
+
+            > 首次运行需在系统设置中允许运行来自"未知开发者"的应用（macOS）。
+          releaseDraft: ${{ steps.params.outputs.draft == 'true' }}
+          prerelease: false
+          uploadWorkflowArtifacts: true   # 同时上传 artifact，方便直接下载
+
+      # ── 仅构建 + 上传 artifact（无 tag 时）───────────────────────────────────
+      - name: 构建 Tauri 应用（不发布 Release）
+        if: steps.params.outputs.upload_release == 'false'
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: ./frontend
+          args: ${{ matrix.args }}
+          uploadWorkflowArtifacts: true   # 产物上传为 workflow artifact，可在 Actions 页面下载
+
+      # ── 打印下载提示 ──────────────────────────────────────────────────────────
+      - name: 打印下载地址
+        shell: bash
         run: |
-          echo "✅ 调试构建完成，产物已上传为 workflow artifacts"
-          echo "前往 Actions 页面 → 本次运行 → Artifacts 下载"
+          echo "=========================================="
+          if [[ "${{ steps.params.outputs.upload_release }}" == "true" ]]; then
+            echo "✅ 构建完成，已上传到 Release:"
+            echo "   https://github.com/${{ github.repository }}/releases/tag/${{ steps.params.outputs.tag_name }}"
+          else
+            echo "✅ 构建完成，产物已上传为 Workflow Artifact"
+            echo "   下载地址：https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "   进入页面后在底部 Artifacts 区域下载"
+          fi
+          echo "=========================================="
