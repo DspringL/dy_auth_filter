@@ -1,0 +1,11 @@
+{
+  "identifier": "default",
+  "description": "默认权限配置",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:allow-open",
+    "dialog:default",
+    "notification:default"
+  ]
+}

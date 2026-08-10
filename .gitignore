@@ -37,6 +37,11 @@ frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 
+# Tauri 构建产物（不上传，本地运行 build_desktop.sh 生成）
+frontend/src-tauri/target/
+frontend/src-tauri/binaries/
+frontend/src-tauri/gen/
+
 # IDE
 .vscode/
 .idea/
