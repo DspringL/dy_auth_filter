@@ -7,12 +7,18 @@ on:
   workflow_dispatch:   # 支持手动触发
 
 jobs:
+  # ────────────────────────────────────────────────────────────────────────────
+  # 正式版多平台构建 + 发布 Release（仅 tag 触发）
+  # ────────────────────────────────────────────────────────────────────────────
   build:
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write   # 必须有写权限才能创建 Release 和上传资产
     strategy:
       fail-fast: false
       matrix:
         include:
-          # macOS Apple Silicon
+          # macOS Apple Silicon (M1/M2/M3)
           - platform: macos-latest
             args: '--target aarch64-apple-darwin'
             rust_target: aarch64-apple-darwin
@@ -30,24 +36,25 @@ jobs:
             rust_target: x86_64-unknown-linux-gnu
 
     runs-on: ${{ matrix.platform }}
+
     steps:
-      # ── 检出代码 ────────────────────────────────────────────────────────────
+      # ── 检出代码 ─────────────────────────────────────────────────────────────
       - name: 检出代码
         uses: actions/checkout@v4
 
-      # ── 配置 Node.js ────────────────────────────────────────────────────────
-      - name: 配置 Node.js 22
+      # ── 配置 Node.js ──────────────────────────────────────────────────────────
+      - name: 配置 Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: lts/*
 
-      # ── 配置 Python（用于打包后端） ──────────────────────────────────────────
+      # ── 配置 Python（用于打包后端 sidecar） ────────────────────────────────────
       - name: 配置 Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      # ── 配置 Rust ───────────────────────────────────────────────────────────
+      # ── 配置 Rust stable ─────────────────────────────────────────────────────
       - name: 配置 Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -58,7 +65,7 @@ jobs:
         with:
           workspaces: './frontend/src-tauri -> target'
 
-      # ── Linux 系统依赖 ──────────────────────────────────────────────────────
+      # ── Linux 系统依赖 ────────────────────────────────────────────────────────
       - name: 安装 Linux 系统依赖
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -69,39 +76,29 @@ jobs:
             librsvg2-dev \
             patchelf \
             libssl-dev \
-            pkg-config
+            pkg-config \
+            xdg-utils
 
-      # ── 安装 Python 后端依赖 ─────────────────────────────────────────────────
-      - name: 安装 Python 依赖
+      # ── 安装 Python 后端依赖 + 打包为 sidecar ──────────────────────────────────
+      - name: 安装 Python 依赖并打包后端
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
+          python build_backend.py
 
-      # ── 打包 Python 后端为可执行文件 ──────────────────────────────────────────
-      - name: 打包 Python 后端
-        run: python build_backend.py
-
-      # ── 安装前端依赖 ─────────────────────────────────────────────────────────
+      # ── 安装前端依赖 ──────────────────────────────────────────────────────────
       - name: 安装前端依赖
         working-directory: ./frontend
         run: npm install
 
-      # ── 构建 Tauri 桌面应用 ───────────────────────────────────────────────────
-      - name: 构建 Tauri 应用
-        uses: tauri-apps/tauri-action@v0
+      # ── 构建 Tauri 桌面应用并发布 Release ────────────────────────────────────
+      - name: 构建 Tauri 应用并上传到 Release
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS 签名（可选，需要在 Secrets 中配置）
-          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          # APPLE_ID: ${{ secrets.APPLE_ID }}
-          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: ./frontend
-          tauriScript: npx tauri
           args: ${{ matrix.args }}
           tagName: ${{ github.ref_name }}
           releaseName: '抖音达人系统 ${{ github.ref_name }}'
@@ -119,32 +116,70 @@ jobs:
           releaseDraft: true
           prerelease: false
 
-  # ── 开发版构建（仅当前平台，不发布） ───────────────────────────────────────
+  # ────────────────────────────────────────────────────────────────────────────
+  # 开发版构建（手动触发，仅 Linux debug，上传为 workflow artifact）
+  # ────────────────────────────────────────────────────────────────────────────
   dev-build:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22 }
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-      - uses: dtolnay/rust-toolchain@stable
-      - name: 系统依赖
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: 配置 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 配置 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 编译产物
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './frontend/src-tauri -> target'
+
+      - name: 安装 Linux 系统依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev pkg-config
-      - run: pip install -r requirements.txt pyinstaller
-      - run: python build_backend.py
-      - run: npm install
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            pkg-config \
+            xdg-utils
+
+      - name: 安装 Python 依赖并打包后端
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+          python build_backend.py
+
+      - name: 安装前端依赖
         working-directory: ./frontend
-      - name: 构建调试版
-        working-directory: ./frontend
-        run: npx tauri build --debug
-      - name: 上传产物
-        uses: actions/upload-artifact@v4
+        run: npm install
+
+      - name: 构建调试版（不发布 Release）
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          name: debug-build-linux
-          path: |
-            frontend/src-tauri/target/debug/bundle/
-          retention-days: 7
+          projectPath: ./frontend
+          args: '--debug'
+          uploadWorkflowArtifacts: true
+
+      - name: 说明产物位置
+        run: |
+          echo "✅ 调试构建完成，产物已上传为 workflow artifacts"
+          echo "前往 Actions 页面 → 本次运行 → Artifacts 下载"
