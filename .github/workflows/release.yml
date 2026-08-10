@@ -3,26 +3,26 @@ name: 跨平台桌面端构建与发布
 on:
   push:
     tags:
-      - 'v*'          # 打 tag 时自动触发全平台构建
+      - 'v*'         # 打 tag 自动触发全平台构建并发布 Release
 
-  workflow_dispatch:  # 手动触发，可选平台
+  workflow_dispatch: # 手动触发，可选平台
     inputs:
       platform:
-        description: '选择构建平台'
+        description: '构建平台'
         required: true
         default: 'all'
         type: choice
         options:
-          - all           # macOS ARM + macOS Intel + Windows
-          - macos-arm     # macOS Apple Silicon (M1/M2/M3)
-          - macos-intel   # macOS Intel (x86_64)
-          - windows       # Windows x64
+          - all          # macOS ARM + macOS Intel + Windows
+          - macos-arm    # macOS Apple Silicon (M1/M2/M3)
+          - macos-intel  # macOS Intel (x86_64)
+          - windows      # Windows x64
       release_tag:
-        description: '发布到哪个 Release tag（如 v1.0.4），留空则只上传 artifact'
+        description: '发布到 Release 的 tag（如 v1.0.5），留空则只上传 artifact'
         required: false
         default: ''
       draft:
-        description: '发布为草稿？'
+        description: '是否草稿（Draft）'
         required: false
         default: 'false'
         type: choice
@@ -30,36 +30,27 @@ on:
           - 'false'
           - 'true'
 
-# ──────────────────────────────────────────────────────────────────────────────
-# macOS Apple Silicon
-# ──────────────────────────────────────────────────────────────────────────────
 jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # macOS Apple Silicon
+  # ──────────────────────────────────────────────────────────────────────────
   build-macos-arm:
-    name: 构建 macOS Apple Silicon
-    if: >
-      startsWith(github.ref, 'refs/tags/v') ||
-      inputs.platform == 'all' ||
-      inputs.platform == 'macos-arm'
+    name: macOS Apple Silicon
+    # tag push 时始终运行；手动触发时仅 all 或 macos-arm 才运行
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'macos-arm'
     runs-on: macos-latest
     permissions:
       contents: write
-    env:
-      RUST_TARGET: aarch64-apple-darwin
-      TAURI_ARGS: '--target aarch64-apple-darwin'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
+        with: { node-version: lts/* }
       - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+        with: { python-version: '3.12' }
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
+        with: { targets: aarch64-apple-darwin }
       - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: './frontend/src-tauri -> target'
+        with: { workspaces: './frontend/src-tauri -> target' }
 
       - name: 打包 Python 后端 sidecar
         env:
@@ -75,80 +66,49 @@ jobs:
         working-directory: ./frontend
         run: npm install
 
-      - name: 构建并发布（有 tag）
-        if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
+      - name: 构建并上传到 Release
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: ./frontend
           args: '--target aarch64-apple-darwin'
-          tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release_tag }}
-          releaseName: '抖音达人系统 ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release_tag }}'
+          # tag push 用 git tag 名；手动填了 tag 就用输入值；否则不创建 Release
+          tagName: ${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}
+          releaseName: ${{ github.event_name == 'push' && format('抖音达人系统 {0}', github.ref_name) || (inputs.release_tag != '' && format('抖音达人系统 {0}', inputs.release_tag) || '') }}
           releaseBody: |
             ## 下载安装
 
-            | 平台 | 文件名 | 说明 |
-            |------|--------|------|
-            | macOS Apple Silicon | `*_aarch64.dmg` | M1/M2/M3，双击安装 |
+            | 平台 | 文件 | 说明 |
+            |------|------|------|
+            | macOS Apple Silicon | `*_aarch64.dmg` | M1/M2/M3 芯片，双击安装 |
             | macOS Intel | `*_x64.dmg` | Intel 芯片，双击安装 |
-            | Windows | `*_x64-setup.exe` | Windows 10/11 |
+            | Windows | `*_x64-setup.exe` | Windows 10/11，管理员运行 |
 
-            > macOS 首次运行：系统设置 → 隐私与安全性 → 仍然允许
+            > macOS 首次运行：系统偏好设置 → 安全性 → 仍要打开
           releaseDraft: ${{ inputs.draft == 'true' }}
           prerelease: false
-          uploadWorkflowArtifacts: true
+          uploadWorkflowArtifacts: true   # 同时上传 artifact，无论是否发 Release
 
-      - name: 仅构建不发布（无 tag）
-        if: github.event_name == 'workflow_dispatch' && inputs.release_tag == ''
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          projectPath: ./frontend
-          args: '--target aarch64-apple-darwin'
-          uploadWorkflowArtifacts: true
-
-      - name: 打印下载地址
-        shell: bash
-        run: |
-          echo "================================================"
-          echo "✅ macOS ARM 构建完成"
-          if [[ "${{ startsWith(github.ref, 'refs/tags/v') }}" == "true" ]]; then
-            echo "📦 Release: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
-          elif [[ -n "${{ inputs.release_tag }}" ]]; then
-            echo "📦 Release: https://github.com/${{ github.repository }}/releases/tag/${{ inputs.release_tag }}"
-          else
-            echo "📦 Artifact: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          fi
-          echo "================================================"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# macOS Intel
-# ──────────────────────────────────────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────────────────
+  # macOS Intel
+  # ──────────────────────────────────────────────────────────────────────────
   build-macos-intel:
-    name: 构建 macOS Intel
-    if: >
-      startsWith(github.ref, 'refs/tags/v') ||
-      inputs.platform == 'all' ||
-      inputs.platform == 'macos-intel'
+    name: macOS Intel
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'macos-intel'
     runs-on: macos-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
+        with: { node-version: lts/* }
       - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+        with: { python-version: '3.12' }
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-apple-darwin
+        with: { targets: x86_64-apple-darwin }
       - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: './frontend/src-tauri -> target'
+        with: { workspaces: './frontend/src-tauri -> target' }
 
       - name: 打包 Python 后端 sidecar
         env:
@@ -164,78 +124,47 @@ jobs:
         working-directory: ./frontend
         run: npm install
 
-      - name: 构建并发布（有 tag）
-        if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
+      - name: 构建并上传到 Release
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: ./frontend
           args: '--target x86_64-apple-darwin'
-          tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release_tag }}
-          releaseName: '抖音达人系统 ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release_tag }}'
+          tagName: ${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}
+          releaseName: ${{ github.event_name == 'push' && format('抖音达人系统 {0}', github.ref_name) || (inputs.release_tag != '' && format('抖音达人系统 {0}', inputs.release_tag) || '') }}
           releaseBody: |
             ## 下载安装
 
-            | 平台 | 文件名 | 说明 |
-            |------|--------|------|
-            | macOS Apple Silicon | `*_aarch64.dmg` | M1/M2/M3，双击安装 |
+            | 平台 | 文件 | 说明 |
+            |------|------|------|
+            | macOS Apple Silicon | `*_aarch64.dmg` | M1/M2/M3 芯片，双击安装 |
             | macOS Intel | `*_x64.dmg` | Intel 芯片，双击安装 |
-            | Windows | `*_x64-setup.exe` | Windows 10/11 |
+            | Windows | `*_x64-setup.exe` | Windows 10/11，管理员运行 |
 
-            > macOS 首次运行：系统设置 → 隐私与安全性 → 仍然允许
+            > macOS 首次运行：系统偏好设置 → 安全性 → 仍要打开
           releaseDraft: ${{ inputs.draft == 'true' }}
           prerelease: false
           uploadWorkflowArtifacts: true
 
-      - name: 仅构建不发布（无 tag）
-        if: github.event_name == 'workflow_dispatch' && inputs.release_tag == ''
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          projectPath: ./frontend
-          args: '--target x86_64-apple-darwin'
-          uploadWorkflowArtifacts: true
-
-      - name: 打印下载地址
-        shell: bash
-        run: |
-          echo "================================================"
-          echo "✅ macOS Intel 构建完成"
-          if [[ "${{ startsWith(github.ref, 'refs/tags/v') }}" == "true" ]]; then
-            echo "📦 Release: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
-          elif [[ -n "${{ inputs.release_tag }}" ]]; then
-            echo "📦 Release: https://github.com/${{ github.repository }}/releases/tag/${{ inputs.release_tag }}"
-          else
-            echo "📦 Artifact: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          fi
-          echo "================================================"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Windows x64
-# ──────────────────────────────────────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────────────────
+  # Windows x64
+  # ──────────────────────────────────────────────────────────────────────────
   build-windows:
-    name: 构建 Windows x64
-    if: >
-      startsWith(github.ref, 'refs/tags/v') ||
-      inputs.platform == 'all' ||
-      inputs.platform == 'windows'
+    name: Windows x64
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'windows'
     runs-on: windows-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
+        with: { node-version: lts/* }
       - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+        with: { python-version: '3.12' }
       - uses: dtolnay/rust-toolchain@stable
       - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: './frontend/src-tauri -> target'
+        with: { workspaces: './frontend/src-tauri -> target' }
 
       - name: 打包 Python 后端 sidecar
         env:
@@ -251,50 +180,25 @@ jobs:
         working-directory: ./frontend
         run: npm install
 
-      - name: 构建并发布（有 tag）
-        if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
+      - name: 构建并上传到 Release
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: ./frontend
           args: ''
-          tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release_tag }}
-          releaseName: '抖音达人系统 ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release_tag }}'
+          tagName: ${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}
+          releaseName: ${{ github.event_name == 'push' && format('抖音达人系统 {0}', github.ref_name) || (inputs.release_tag != '' && format('抖音达人系统 {0}', inputs.release_tag) || '') }}
           releaseBody: |
             ## 下载安装
 
-            | 平台 | 文件名 | 说明 |
-            |------|--------|------|
-            | macOS Apple Silicon | `*_aarch64.dmg` | M1/M2/M3，双击安装 |
+            | 平台 | 文件 | 说明 |
+            |------|------|------|
+            | macOS Apple Silicon | `*_aarch64.dmg` | M1/M2/M3 芯片，双击安装 |
             | macOS Intel | `*_x64.dmg` | Intel 芯片，双击安装 |
-            | Windows | `*_x64-setup.exe` | Windows 10/11 |
+            | Windows | `*_x64-setup.exe` | Windows 10/11，管理员运行 |
 
-            > macOS 首次运行：系统设置 → 隐私与安全性 → 仍然允许
+            > macOS 首次运行：系统偏好设置 → 安全性 → 仍要打开
           releaseDraft: ${{ inputs.draft == 'true' }}
           prerelease: false
           uploadWorkflowArtifacts: true
-
-      - name: 仅构建不发布（无 tag）
-        if: github.event_name == 'workflow_dispatch' && inputs.release_tag == ''
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          projectPath: ./frontend
-          args: ''
-          uploadWorkflowArtifacts: true
-
-      - name: 打印下载地址
-        shell: bash
-        run: |
-          echo "================================================"
-          echo "✅ Windows 构建完成"
-          if [[ "${{ startsWith(github.ref, 'refs/tags/v') }}" == "true" ]]; then
-            echo "📦 Release: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
-          elif [[ -n "${{ inputs.release_tag }}" ]]; then
-            echo "📦 Release: https://github.com/${{ github.repository }}/releases/tag/${{ inputs.release_tag }}"
-          else
-            echo "📦 Artifact: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          fi
-          echo "================================================"
