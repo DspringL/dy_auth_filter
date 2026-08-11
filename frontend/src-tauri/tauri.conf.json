@@ -21,7 +21,8 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src http://127.0.0.1:8000 http://localhost:8000 ws://127.0.0.1:8000 ws://localhost:8000; img-src 'self' data: https: http://127.0.0.1:8000 http://localhost:8000"
+      "csp": null,
+      "dangerousDisableAssetCspModification": true
     }
   },
   "bundle": {

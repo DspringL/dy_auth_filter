@@ -35,6 +35,13 @@ export default defineConfig({
   },
   // Tauri 打包时使用相对路径
   base: process.env.TAURI_ENV_DEBUG ? '/' : './',
+  // 构建时注入：是否为 Tauri 打包发布版（非 dev）
+  // tauri build 时 TAURI_ENV_DEBUG 为空，TAURI_ENV_PLATFORM 有值
+  define: {
+    '__TAURI_PROD__': JSON.stringify(
+      !process.env.TAURI_ENV_DEBUG && !!process.env.TAURI_ENV_PLATFORM
+    ),
+  },
   build: {
     // Tauri 要求 ES 模块，且不压缩 sourcemap
     target: process.env.TAURI_ENV_PLATFORM === 'windows' ? 'chrome105' : 'safari13',
