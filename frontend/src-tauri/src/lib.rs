@@ -16,8 +16,12 @@ fn start_backend(app: &AppHandle) -> std::io::Result<Child> {
 
     if sidecar_path.exists() {
         // 生产模式：运行打包的可执行文件
+        // DYAUTH_RESOURCE_DIR 指向 app 数据目录，确保数据库和配置写到正确位置
+        let data_dir = app.path()
+            .app_data_dir()
+            .unwrap_or(resource_path.clone());
         Command::new(sidecar_path)
-            .env("DYAUTH_RESOURCE_DIR", resource_path.to_str().unwrap_or("."))
+            .env("DYAUTH_RESOURCE_DIR", data_dir.to_str().unwrap_or("."))
             .spawn()
     } else {
         // 开发模式：从 src-tauri 目录往上找项目根（含 .venv 的目录）
