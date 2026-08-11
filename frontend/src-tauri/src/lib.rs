@@ -20,24 +20,29 @@ fn start_backend(app: &AppHandle) -> std::io::Result<Child> {
             .env("DYAUTH_RESOURCE_DIR", resource_path.to_str().unwrap_or("."))
             .spawn()
     } else {
-        // 开发模式：直接运行 uvicorn
-        let project_root = std::env::current_dir()
-            .unwrap_or_default()
-            .parent()
-            .unwrap_or(&std::path::PathBuf::from("."))
+        // 开发模式：从 src-tauri 目录往上找项目根（含 .venv 的目录）
+        let src_tauri_dir = std::env::current_dir().unwrap_or_default();
+        // current_dir 在 tauri dev 时是 frontend/src-tauri，往上两级是项目根
+        let project_root = src_tauri_dir
+            .ancestors()
+            .find(|p| p.join(".venv").exists())
+            .unwrap_or(&src_tauri_dir)
             .to_path_buf();
 
-        // 尝试找到 .venv 中的 uvicorn
-        let venv_uvicorn = project_root.join(".venv/bin/uvicorn");
-        let uvicorn_cmd = if venv_uvicorn.exists() {
-            venv_uvicorn.to_str().unwrap_or("uvicorn").to_string()
+        // 用 .venv 里的 python3 以 -m uvicorn 方式启动，避免全局 uvicorn shebang 问题
+        let python_bin = project_root.join(".venv/bin/python3");
+        let python_cmd = if python_bin.exists() {
+            python_bin.to_str().unwrap_or("python3").to_string()
         } else {
-            "uvicorn".to_string()
+            "python3".to_string()
         };
 
-        Command::new(uvicorn_cmd)
+        println!("开发模式：project_root={} python={}", project_root.display(), python_cmd);
+
+        Command::new(&python_cmd)
             .current_dir(&project_root)
             .args([
+                "-m", "uvicorn",
                 "backend.main:app",
                 "--host", "127.0.0.1",
                 "--port", "8000",
@@ -122,7 +127,7 @@ pub fn run() {
         // 等待后端就绪后通知前端（另起线程轮询，不阻塞 UI）
             let handle = app_handle.clone();
             std::thread::spawn(move || {
-                for _ in 0..20 {
+                for _ in 0..60 {
                     std::thread::sleep(std::time::Duration::from_millis(1000));
                     if let Ok(resp) = reqwest::blocking::get("http://127.0.0.1:8000/") {
                         if resp.status().is_success() {

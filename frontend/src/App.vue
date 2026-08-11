@@ -30,7 +30,7 @@ async function initBackend() {
     if (splashProgress.value < 88) splashProgress.value += 3
   }, 600)
 
-  const ready = await waitForBackend(40)
+  const ready = await waitForBackend(60)
   clearInterval(timer)
 
   if (ready) {

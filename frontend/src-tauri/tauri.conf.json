@@ -1,5 +1,5 @@
 {
-  "productName": "抖音达人系统",
+  "productName": "抖音达人联络官",
   "version": "1.0.0",
   "identifier": "com.dyauth.filter",
   "build": {
@@ -11,7 +11,7 @@
   "app": {
     "windows": [
       {
-        "title": "抖音带货达人管理系统",
+        "title": "抖音达人联络官",
         "width": 1400,
         "height": 900,
         "minWidth": 1100,
@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src http://127.0.0.1:8000 http://localhost:8000 ws://127.0.0.1:8000 ws://localhost:8000; img-src 'self' data: https: http://127.0.0.1:8000 http://localhost:8000"
     }
   },
   "bundle": {

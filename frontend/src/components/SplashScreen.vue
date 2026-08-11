@@ -2,9 +2,31 @@
   <div class="splash">
     <div class="splash-inner">
       <div class="logo-wrap">
-        <el-icon size="64" color="#1677ff"><VideoCamera /></el-icon>
+        <!-- 抖音风格音符 logo -->
+        <svg width="72" height="72" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="512" height="512" rx="112" fill="#010101"/>
+          <!-- 青色阴影 -->
+          <g transform="translate(14,-14)" opacity="0.85">
+            <ellipse cx="198" cy="362" rx="66" ry="66" fill="#2EE0D1"/>
+            <rect x="250" y="108" width="56" height="200" fill="#2EE0D1"/>
+            <rect x="250" y="108" width="126" height="112" fill="#2EE0D1"/>
+            <ellipse cx="376" cy="164" rx="56" ry="56" fill="#2EE0D1"/>
+          </g>
+          <!-- 红色阴影 -->
+          <g transform="translate(-14,14)" opacity="0.85">
+            <ellipse cx="198" cy="362" rx="66" ry="66" fill="#FE2C55"/>
+            <rect x="250" y="108" width="56" height="200" fill="#FE2C55"/>
+            <rect x="250" y="108" width="126" height="112" fill="#FE2C55"/>
+            <ellipse cx="376" cy="164" rx="56" ry="56" fill="#FE2C55"/>
+          </g>
+          <!-- 白色主体 -->
+          <ellipse cx="198" cy="362" rx="66" ry="66" fill="white"/>
+          <rect x="250" y="108" width="56" height="200" fill="white"/>
+          <rect x="250" y="108" width="126" height="112" fill="white"/>
+          <ellipse cx="376" cy="164" rx="56" ry="56" fill="white"/>
+        </svg>
       </div>
-      <h1 class="title">抖音带货达人系统</h1>
+      <h1 class="title">抖音达人联络官</h1>
       <p class="subtitle">正在启动后端服务，请稍候...</p>
 
       <el-progress
