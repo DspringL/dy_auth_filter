@@ -36,14 +36,6 @@
     ],
     "externalBin": [
       "binaries/backend-server"
-    ],
-    "windows": {
-      "wix": {
-        "language": "zh-CN"
-      },
-      "nsis": {
-        "language": ["SimpChinese"]
-      }
-    }
+    ]
   }
 }
