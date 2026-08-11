@@ -1,5 +1,5 @@
 {
-  "productName": "抖音达人联络官",
+  "productName": "DouyinKOL",
   "version": "1.0.0",
   "identifier": "com.dyauth.filter",
   "build": {
@@ -36,6 +36,14 @@
     ],
     "externalBin": [
       "binaries/backend-server"
-    ]
+    ],
+    "windows": {
+      "wix": {
+        "language": "zh-CN"
+      },
+      "nsis": {
+        "language": ["SimpChinese"]
+      }
+    }
   }
 }
