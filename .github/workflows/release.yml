@@ -75,13 +75,13 @@ jobs:
           args: '--target aarch64-apple-darwin'
           # tag push 用 git tag 名；手动填了 tag 就用输入值；否则不创建 Release
           tagName: ${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}
-          releaseName: ${{ github.event_name == 'push' && format('抖音达人系统 {0}', github.ref_name) || (inputs.release_tag != '' && format('抖音达人系统 {0}', inputs.release_tag) || '') }}
+          releaseName: ${{ github.event_name == 'push' && format('抖音联络官 {0}', github.ref_name) || (inputs.release_tag != '' && format('抖音联络官 {0}', inputs.release_tag) || '') }}
           releaseBody: |
             ## 下载安装
 
             | 平台 | 文件 | 说明 |
             |------|------|------|
-            | macOS Apple Silicon | `*_aarch64.dmg` | M1/M2/M3 芯片，双击安装 |
+            | macOS Apple Silicon | `*_aarch64.dmg` | M芯片，双击安装 |
             | macOS Intel | `*_x64.dmg` | Intel 芯片，双击安装 |
             | Windows | `*_x64-setup.exe` | Windows 10/11，管理员运行 |
 
@@ -132,13 +132,13 @@ jobs:
           projectPath: ./frontend
           args: '--target x86_64-apple-darwin'
           tagName: ${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}
-          releaseName: ${{ github.event_name == 'push' && format('抖音达人系统 {0}', github.ref_name) || (inputs.release_tag != '' && format('抖音达人系统 {0}', inputs.release_tag) || '') }}
+          releaseName: ${{ github.event_name == 'push' && format('抖音联络官 {0}', github.ref_name) || (inputs.release_tag != '' && format('抖音联络官 {0}', inputs.release_tag) || '') }}
           releaseBody: |
             ## 下载安装
 
             | 平台 | 文件 | 说明 |
             |------|------|------|
-            | macOS Apple Silicon | `*_aarch64.dmg` | M1/M2/M3 芯片，双击安装 |
+            | macOS Apple Silicon | `*_aarch64.dmg` | M 芯片，双击安装 |
             | macOS Intel | `*_x64.dmg` | Intel 芯片，双击安装 |
             | Windows | `*_x64-setup.exe` | Windows 10/11，管理员运行 |
 
@@ -188,13 +188,13 @@ jobs:
           projectPath: ./frontend
           args: ''
           tagName: ${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}
-          releaseName: ${{ github.event_name == 'push' && format('抖音达人系统 {0}', github.ref_name) || (inputs.release_tag != '' && format('抖音达人系统 {0}', inputs.release_tag) || '') }}
+          releaseName: ${{ github.event_name == 'push' && format('抖音联络官 {0}', github.ref_name) || (inputs.release_tag != '' && format('抖音联络官 {0}', inputs.release_tag) || '') }}
           releaseBody: |
             ## 下载安装
 
             | 平台 | 文件 | 说明 |
             |------|------|------|
-            | macOS Apple Silicon | `*_aarch64.dmg` | M1/M2/M3 芯片，双击安装 |
+            | macOS Apple Silicon | `*_aarch64.dmg` | M 芯片，双击安装 |
             | macOS Intel | `*_x64.dmg` | Intel 芯片，双击安装 |
             | Windows | `*_x64-setup.exe` | Windows 10/11，管理员运行 |
 
