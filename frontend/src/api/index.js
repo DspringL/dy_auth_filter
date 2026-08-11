@@ -1,8 +1,28 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 
+/**
+ * 判断是否在 Tauri 打包环境中运行
+ * dev 模式（npm run tauri:dev）也是 Tauri 环境，但有 vite proxy
+ * 打包后（tauri build）没有 vite proxy，需要用绝对地址
+ */
+function getBaseURL() {
+  // __TAURI_INTERNALS__ 存在说明在 Tauri WebView 中运行
+  const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+  // TAURI_ENV_DEBUG 为 true 说明是 tauri dev（有 vite proxy）
+  // import.meta.env.DEV 在 vite dev server 下为 true
+  const isDevMode = import.meta.env.DEV
+
+  if (isTauri && !isDevMode) {
+    // 打包后的 Tauri 应用：直接请求后端绝对地址
+    return 'http://127.0.0.1:8000/api'
+  }
+  // dev 模式或浏览器：走 vite proxy 的相对路径
+  return '/api'
+}
+
 const http = axios.create({
-  baseURL: '/api',
+  baseURL: getBaseURL(),
   timeout: 30000,
 })
 
@@ -52,6 +72,6 @@ export const statsApi = {
 
 // ── 系统配置 ──────────────────────────────────────────────────────────────────
 export const configApi = {
-  get:  ()       => http.get('/config'),
-  save: (data)   => http.post('/config', data),
+  get:  ()     => http.get('/config'),
+  save: (data) => http.post('/config', data),
 }
