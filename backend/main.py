@@ -21,8 +21,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="抖音带货达人管理系统",
-    description="自动搜索、筛选带货达人，发送私信，管理后台展示",
+    title="抖音达人联络官",
+    description="自动搜索、筛选达人，发送私信，管理后台展示",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -41,4 +41,4 @@ app.include_router(router)
 
 @app.get("/", tags=["健康检查"])
 async def health():
-    return {"status": "ok", "service": "抖音带货达人管理系统"}
+    return {"status": "ok", "service": "抖音达人联络官"}
