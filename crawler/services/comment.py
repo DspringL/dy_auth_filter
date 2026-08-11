@@ -24,6 +24,31 @@ SENT_FILE: Path = ROOT_DIR / get("comment.sent_record_file", "data/comment_sent.
 POST_LIST_API   = "/aweme/v1/web/aweme/post/"
 
 
+async def _fill_input(el, text: str, page):
+    """
+    通用输入填充：
+    - textarea / input：用 fill() 直接填充
+    - contenteditable div：用 evaluate 设置内容并触发 React 能感知的事件
+    """
+    tag = await el.evaluate("e => e.tagName.toLowerCase()")
+    if tag in ("input", "textarea"):
+        await el.fill(text)
+    else:
+        await el.click()
+        await el.evaluate(
+            """(el, txt) => {
+                el.textContent = txt;
+                el.dispatchEvent(new Event('input', {bubbles: true}));
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+            }""",
+            text,
+        )
+        # 末尾补空格再退格，确保 React onChange 感知到内容变化
+        await page.keyboard.press("End")
+        await page.keyboard.type(" ")
+        await page.keyboard.press("Backspace")
+
+
 def _get_template() -> str:
     from backend.models.config_store import get_runtime
     return get_runtime("comment.template", get("comment.template",
@@ -239,7 +264,7 @@ class CommentService:
         # Step 4：点击激活并输入
         try:
             await input_box.click()
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(0.8)
             # 点击后重新找——有些容器点击后才会出现真正的 editable 子元素
             real_input = None
             for sel in ['[contenteditable="true"]', 'textarea', 'input[type="text"]']:
@@ -256,8 +281,9 @@ class CommentService:
                 except Exception:
                     continue
             target = real_input or input_box
-            await target.type(comment_text, delay=random.randint(40, 90))
-            await asyncio.sleep(random.uniform(0.5, 1.2))
+            # 直接填充，不逐字输入
+            await _fill_input(target, comment_text, page)
+            await asyncio.sleep(random.uniform(0.3, 0.8))
         except Exception as e:
             logger.warning(f"「{nickname}」输入评论失败：{e}")
             return aweme_id, False
@@ -326,29 +352,34 @@ class CommentService:
 
     @staticmethod
     async def _submit_comment(page: Page, input_box) -> bool:
-        """提交评论：先找发送按钮，找不到就用 Ctrl+Enter / Enter"""
+        """提交评论：先找发送按钮，找不到就用 Enter"""
         send_selectors = [
             'button[data-e2e="comment-submit"]',
             'button:has-text("发布")',
             'button:has-text("发送")',
             '[class*="comment"] button[class*="submit"]',
+            '[class*="btn-submit"]',
+            '[class*="send-btn"]',
+            'button[class*="send"]',
         ]
         for sel in send_selectors:
             try:
                 btn = page.locator(sel).first
-                if await btn.count() > 0:
+                if await btn.count() > 0 and await btn.is_enabled():
                     await btn.click()
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(1.5)
+                    logger.info(f"[评论] 点击发送按钮：{sel}")
                     return True
             except Exception:
                 continue
 
-        # 回退：Ctrl+Enter 发送
+        # 回退：直接按 Enter 键发送
         try:
-            await input_box.press("Control+Enter")
-            await asyncio.sleep(1.0)
+            await input_box.press("Enter")
+            await asyncio.sleep(1.5)
+            logger.info("[评论] 用 Enter 键发送")
             return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[评论] Enter 发送失败：{e}")
 
         return False

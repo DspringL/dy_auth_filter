@@ -22,8 +22,31 @@ from crawler.utils.config import get, ROOT_DIR
 SENT_FILE: Path = ROOT_DIR / get("dm.sent_record_file", "data/dm_sent.json")
 
 
-def _get_template() -> str:
-    """运行时读取私信模板（DB 覆盖 > yaml）"""
+async def _fill_input(el, text: str, page):
+    """
+    通用输入填充：
+    - textarea / input：用 fill() 直接填充
+    - contenteditable div：用 evaluate 设置 textContent 并触发 input 事件，
+      再用 keyboard.type 补一个空格+退格确保抖音 React 能感知到变化
+    """
+    tag = await el.evaluate("e => e.tagName.toLowerCase()")
+    if tag in ("input", "textarea"):
+        await el.fill(text)
+    else:
+        # contenteditable
+        await el.click()
+        await el.evaluate(
+            """(el, txt) => {
+                el.textContent = txt;
+                el.dispatchEvent(new Event('input', {bubbles: true}));
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+            }""",
+            text,
+        )
+        # 末尾补一个空格再退格，触发 React onChange
+        await page.keyboard.press("End")
+        await page.keyboard.type(" ")
+        await page.keyboard.press("Backspace")
     from backend.models.config_store import get_runtime
     return get_runtime("dm.template", get("dm.template",
         "你好 {nickname}，我是某某品牌商务负责人，"
@@ -255,24 +278,26 @@ class DMService:
 
             await input_box.click()
             await asyncio.sleep(0.5)
-            # 使用 type（逐字符，模拟人类输入）
-            await input_box.type(message, delay=random.randint(30, 80))
-            await asyncio.sleep(random.uniform(0.5, 1.5))
+            # 直接填充，不逐字输入
+            await _fill_input(input_box, message, page)
+            await asyncio.sleep(random.uniform(0.3, 0.8))
 
             # ── 点击发送 ─────────────────────────────────────────────────────
             send_selectors = [
                 'button[data-e2e="chat-send-btn"]',
                 'button:has-text("发送")',
                 '[class*="send-btn"]',
+                '[class*="sendBtn"]',
                 'button[type="submit"]',
             ]
             sent = False
             for sel in send_selectors:
                 try:
                     btn = page.locator(sel).first
-                    if await btn.count() > 0:
+                    if await btn.count() > 0 and await btn.is_enabled():
                         await btn.click()
                         sent = True
+                        logger.info(f"[DM] 点击发送按钮：{sel}")
                         break
                 except Exception:
                     continue
@@ -281,6 +306,7 @@ class DMService:
                 # 回退：用 Enter 键发送
                 await input_box.press("Enter")
                 sent = True
+                logger.info("[DM] 用 Enter 键发送")
 
             await asyncio.sleep(1.0)
             return sent
