@@ -206,6 +206,11 @@ class CommentService:
     async def _comment_one(self, profile: KOLProfile) -> tuple[str, bool]:
         """
         对单个达人的最新作品发评论。
+        基于 js-reverse 分析结论：
+        - 评论输入框是 div.notranslate.public-DraftEditor-content（Draft.js）
+        - 激活方式：坐标点击底部评论栏区域
+        - 输入方式：page.keyboard.type(text, delay=N) 逐字输入
+        - 发送方式：按 Enter 键，触发 POST /aweme/v1/web/comment/publish
         返回 (aweme_id, success)
         """
         page = self._page
@@ -219,7 +224,7 @@ class CommentService:
 
         # Step 2：导航到作品页
         video_url = f"https://www.douyin.com/video/{aweme_id}"
-        logger.info(f"导航到作品页：{video_url}")
+        logger.info(f"[评论] 导航到作品页：{video_url}")
         try:
             await page.goto("about:blank", timeout=5000)
             await page.goto(video_url, wait_until="domcontentloaded", timeout=25_000)
@@ -227,159 +232,89 @@ class CommentService:
             logger.warning(f"「{nickname}」导航到作品页失败：{e}")
             return aweme_id, False
 
-        await asyncio.sleep(random.uniform(3.5, 5.0))
+        await asyncio.sleep(random.uniform(3.0, 4.5))
 
-        # 截图诊断（仅首次）
-        if not getattr(self, '_cmt_screenshot', False):
-            self._cmt_screenshot = True
-            try:
-                await page.screenshot(path="/tmp/comment_video_page.png")
-                title = await page.title()
-                logger.info(f"[评论诊断] 截图已保存 /tmp/comment_video_page.png title={title!r}")
-                # 打印所有 textarea 和 contenteditable
-                for sel in ['textarea', '[contenteditable]', '[placeholder*="评论"]', '[placeholder*="说点"]']:
-                    els = await page.locator(sel).all()
-                    for el in els:
-                        ph = await el.get_attribute("placeholder") or ""
-                        cls = await el.get_attribute("class") or ""
-                        logger.info(f"[评论诊断] {sel}: placeholder={ph!r} class={cls[:60]}")
-            except Exception as e:
-                logger.debug(f"[评论诊断] 失败: {e}")
-
-        # Step 3：找到评论输入框（先点击「评论」区域激活）
+        # Step 3：构造评论文本
         comment_text = (
             _get_template()
-            .replace("\r\n", " ")
-            .replace("\n", " ")
-            .replace("\r", " ")
+            .replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
             .format(nickname=nickname)
             .strip()
         )
         logger.info(f"[评论] 准备发送（{len(comment_text)} 字）：{comment_text[:50]}...")
-        input_box = await self._find_comment_input(page)
-        if input_box is None:
-            logger.warning(f"「{nickname}」未找到评论输入框")
-            return aweme_id, False
 
-        # Step 4：点击激活并输入
-        try:
-            await input_box.click()
-            await asyncio.sleep(0.8)
-            # 点击后重新找——有些容器点击后才会出现真正的 editable 子元素
-            real_input = None
-            for sel in ['[contenteditable="true"]', 'textarea', 'input[type="text"]']:
-                try:
-                    el = input_box.locator(sel).first
-                    if await el.count() > 0:
-                        real_input = el
-                        break
-                    # 也从 page 全局找（对话框可能在 body 层）
-                    el2 = page.locator(sel).last
-                    if await el2.count() > 0:
-                        real_input = el2
-                        break
-                except Exception:
-                    continue
-            target = real_input or input_box
-            # 直接填充，不逐字输入
-            await _fill_input(target, comment_text, page)
-            await asyncio.sleep(random.uniform(0.3, 0.8))
-        except Exception as e:
-            logger.warning(f"「{nickname}」输入评论失败：{e}")
-            return aweme_id, False
+        # Step 4：激活 Draft.js 评论输入框
+        # js-reverse 确认：输入框是 div.notranslate.public-DraftEditor-content
+        # 激活方式：点击页面底部评论栏区域（坐标 y 约在 viewport_height - 112）
+        activated = False
 
-        # Step 5：发送评论
-        sent = await self._submit_comment(page, input_box)
-        return aweme_id, sent
-
-    @staticmethod
-    async def _find_comment_input(page: Page):
-        """查找评论输入框，找不到时先尝试点击评论区域激活"""
-        selectors = [
+        # 方式1：精确 CSS 选择器
+        for sel in [
+            'div.notranslate.public-DraftEditor-content',
+            '[class*="public-DraftEditor-content"]',
             '[data-e2e="comment-input"]',
+            'div[contenteditable="true"][class*="DraftEditor"]',
             'div[contenteditable="true"][class*="comment"]',
-            'div[class*="comment"] div[contenteditable]',
-            'div[contenteditable="true"][class*="input"]',
-            'textarea[placeholder*="评论"]',
-            'textarea[placeholder*="说点什么"]',
-            'textarea[placeholder*="友善评论"]',
-            '[class*="comment-input-inner"]',
-            '[class*="commentInput"]',
-            '[class*="comment_input"]',
-            # 通用 contenteditable 兜底
-            'div[contenteditable="true"]',
-        ]
-
-        # 先直接找
-        for sel in selectors:
-            try:
-                el = page.locator(sel).first
-                if await el.count() > 0:
-                    logger.debug(f"[评论] 找到输入框：{sel}")
-                    return el
-            except Exception:
-                continue
-
-        # 找不到时，尝试点击「评论」按钮/区域来激活输入框
-        activate_selectors = [
-            '[data-e2e="comment-icon"]',
-            'button[aria-label*="评论"]',
-            'svg[class*="comment"]',
-            'span:has-text("评论")',
-            '[class*="comment-btn"]',
-        ]
-        for sel in activate_selectors:
+        ]:
             try:
                 el = page.locator(sel).first
                 if await el.count() > 0:
                     await el.click()
-                    logger.debug(f"[评论] 点击评论入口：{sel}")
-                    await asyncio.sleep(2.0)
+                    logger.info(f"[评论] 点击输入框：{sel}")
+                    activated = True
+                    await asyncio.sleep(0.8)
                     break
             except Exception:
-                continue
+                pass
 
-        # 激活后再次查找
-        for sel in selectors:
+        # 方式2：坐标点击（js-reverse 实测有效：底部评论栏 y ≈ viewport_height - 112）
+        if not activated:
             try:
-                el = page.locator(sel).first
-                if await el.count() > 0:
-                    logger.debug(f"[评论] 激活后找到输入框：{sel}")
-                    return el
-            except Exception:
-                continue
-        return None
+                vp = page.viewport_size or {"width": 1280, "height": 900}
+                click_x = vp["width"] // 2
+                click_y = vp["height"] - 112
+                await page.mouse.click(click_x, click_y)
+                logger.info(f"[评论] 坐标点击激活输入框：({click_x}, {click_y})")
+                activated = True
+                await asyncio.sleep(1.0)
+            except Exception as e:
+                logger.warning(f"[评论] 坐标点击失败：{e}")
 
-    @staticmethod
-    async def _submit_comment(page: Page, input_box) -> bool:
-        """提交评论：先找发送按钮，找不到就用 Enter"""
-        send_selectors = [
-            'button[data-e2e="comment-submit"]',
-            'button:has-text("发布")',
-            'button:has-text("发送")',
-            '[class*="comment"] button[class*="submit"]',
-            '[class*="btn-submit"]',
-            '[class*="send-btn"]',
-            'button[class*="send"]',
-        ]
-        for sel in send_selectors:
-            try:
-                btn = page.locator(sel).first
-                if await btn.count() > 0 and await btn.is_enabled():
-                    await btn.click()
-                    await asyncio.sleep(1.5)
-                    logger.info(f"[评论] 点击发送按钮：{sel}")
-                    return True
-            except Exception:
-                continue
+        if not activated:
+            logger.warning(f"「{nickname}」无法激活评论输入框")
+            return aweme_id, False
 
-        # 回退：直接按 Enter 键发送
+        # Step 5：确认 focused 元素是 DraftEditor，再逐字输入
+        focused = await page.evaluate(
+            "() => document.activeElement ? document.activeElement.className : ''"
+        )
+        logger.info(f"[评论] 当前 focused 元素 class: {focused[:60]}")
+
+        # 如果 focused 不是评论框，再尝试用坐标点击
+        if "DraftEditor" not in focused and "comment" not in focused.lower():
+            vp = page.viewport_size or {"width": 1280, "height": 900}
+            await page.mouse.click(vp["width"] // 2, vp["height"] - 112)
+            await asyncio.sleep(0.8)
+            focused = await page.evaluate(
+                "() => document.activeElement ? document.activeElement.className : ''"
+            )
+            logger.info(f"[评论] 重新 focused: {focused[:60]}")
+
+        # Step 6：逐字输入（delay=30ms，比原来快但仍模拟人类）
         try:
-            await input_box.press("Enter")
-            await asyncio.sleep(1.5)
-            logger.info("[评论] 用 Enter 键发送")
-            return True
+            await page.keyboard.type(comment_text, delay=30)
+            await asyncio.sleep(random.uniform(0.5, 1.0))
+            logger.info(f"[评论] 输入完成")
         except Exception as e:
-            logger.warning(f"[评论] Enter 发送失败：{e}")
+            logger.warning(f"「{nickname}」输入评论失败：{e}")
+            return aweme_id, False
 
-        return False
+        # Step 7：按 Enter 发送（js-reverse 实测：Enter 触发 POST comment/publish）
+        try:
+            await page.keyboard.press("Enter")
+            await asyncio.sleep(1.5)
+            logger.info(f"[评论] Enter 键发送成功")
+            return aweme_id, True
+        except Exception as e:
+            logger.warning(f"「{nickname}」发送评论失败：{e}")
+            return aweme_id, False

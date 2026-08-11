@@ -278,10 +278,9 @@ class DMService:
 
             await input_box.click()
             await asyncio.sleep(0.5)
-            # 直接填充，不逐字输入
-            await _fill_input(input_box, message, page)
+            # 逐字输入，delay=20ms 兼顾速度与反爬检测
+            await page.keyboard.type(message, delay=20)
             await asyncio.sleep(random.uniform(0.3, 0.8))
-
             # ── 点击发送 ─────────────────────────────────────────────────────
             send_selectors = [
                 'button[data-e2e="chat-send-btn"]',
