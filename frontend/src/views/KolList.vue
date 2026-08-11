@@ -7,25 +7,33 @@
         <el-button
           type="primary"
           :icon="Message"
-          :disabled="!selectedIds.length"
+          :disabled="!selectedRows.length"
           @click="() => openContactDialog('dm')"
         >
-          私信 ({{ selectedIds.length }})
+          私信 ({{ selectedRows.length }})
         </el-button>
         <el-button
           type="success"
           :icon="ChatDotRound"
-          :disabled="!selectedIds.length"
+          :disabled="!selectedRows.length"
           @click="() => openContactDialog('comment')"
         >
-          评论 ({{ selectedIds.length }})
+          评论 ({{ selectedRows.length }})
         </el-button>
         <el-button
           type="warning"
-          :disabled="!selectedIds.length"
+          :disabled="!selectedRows.length"
           @click="() => openContactDialog('both')"
         >
           两种都发
+        </el-button>
+        <el-button
+          type="danger"
+          :icon="Delete"
+          :disabled="!selectedRows.length"
+          @click="deleteBatch"
+        >
+          删除 ({{ selectedRows.length }})
         </el-button>
       </div>
     </div>
@@ -154,7 +162,7 @@
         </el-table-column>
 
         <!-- 操作 -->
-        <el-table-column label="操作" width="160" fixed="right">
+        <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
             <el-button
               size="small"
@@ -169,6 +177,13 @@
               :icon="Link"
               @click="openProfile(row)"
             >主页</el-button>
+            <el-button
+              size="small"
+              text
+              type="danger"
+              :icon="Delete"
+              @click="deleteSingle(row)"
+            >删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -190,17 +205,23 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
-import { Refresh, Message, View, Link, ChatDotRound } from '@element-plus/icons-vue'
+import { Refresh, Message, View, Link, ChatDotRound, Delete } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { kolApi, dmApi } from '@/api/index.js'
+import { isTauri } from '@/tauri.js'
 import dayjs from 'dayjs'
 
 const loading = ref(false)
 const list = ref([])
-const selectedIds = ref([])
+const selectedRows = ref([])   // 存整行对象，方便同时拿 id 和 sec_user_id
 
 const filters = reactive({ keyword: '', dm_status: '', min_followers: 0 })
 const pagination = reactive({ page: 1, page_size: 20, total: 0 })
+
+// 从 selectedRows 提取 sec_user_id 列表（用于私信/评论）
+const selectedIds = () => selectedRows.value.map(r => r.sec_user_id)
+// 从 selectedRows 提取 id 列表（用于删除）
+const selectedDbIds = () => selectedRows.value.map(r => r.id)
 
 function formatNum(n) {
   if (!n) return '0'
@@ -218,30 +239,83 @@ function statusTagLabel(s) {
   return { pending: '待发', sent: '已发', failed: '失败' }[s] || s
 }
 
-function openProfile(row) {
-  if (row.profile_url) window.open(row.profile_url, '_blank')
-  else ElMessage.warning('该达人无主页链接')
+// 打开达人主页：Tauri 环境用 shell.open，浏览器用 window.open
+async function openProfile(row) {
+  if (!row.profile_url) {
+    ElMessage.warning('该达人无主页链接')
+    return
+  }
+  if (isTauri()) {
+    try {
+      const { open } = await import('@tauri-apps/plugin-shell')
+      await open(row.profile_url)
+    } catch (e) {
+      // fallback
+      window.open(row.profile_url, '_blank')
+    }
+  } else {
+    window.open(row.profile_url, '_blank')
+  }
 }
 
 function handleSelectionChange(rows) {
-  selectedIds.value = rows.map(r => r.sec_user_id)
+  selectedRows.value = rows
+}
+
+// 单个删除
+async function deleteSingle(row) {
+  try {
+    await ElMessageBox.confirm(
+      `确认删除达人「${row.nickname || row.sec_user_id}」？此操作不可恢复。`,
+      '删除确认',
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' }
+    )
+    await kolApi.delete(row.id)
+    ElMessage.success('已删除')
+    loadData()
+  } catch (e) {
+    if (e !== 'cancel') ElMessage.error('删除失败')
+  }
+}
+
+// 批量删除
+async function deleteBatch() {
+  const ids = selectedDbIds()
+  if (!ids.length) return
+  try {
+    await ElMessageBox.confirm(
+      `确认删除选中的 ${ids.length} 位达人？此操作不可恢复。`,
+      '批量删除确认',
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' }
+    )
+    await kolApi.deleteBatch(ids)
+    ElMessage.success(`已删除 ${ids.length} 位达人`)
+    selectedRows.value = []
+    loadData()
+  } catch (e) {
+    if (e !== 'cancel') ElMessage.error('删除失败')
+  }
 }
 
 async function openContactDialog(method) {
+  const ids = selectedIds()
+  if (!ids.length) return
   const labelMap = { dm: '私信', comment: '评论最新作品', both: '私信 + 评论' }
-  await ElMessageBox.confirm(
-    `确认对选中的 ${selectedIds.value.length} 位达人发送「${labelMap[method]}」？`,
-    '批量联系',
-    { type: 'warning', confirmButtonText: '确认', cancelButtonText: '取消' }
-  )
   try {
-    const res = await dmApi.contact(selectedIds.value, method)
+    await ElMessageBox.confirm(
+      `确认对选中的 ${ids.length} 位达人发送「${labelMap[method]}」？`,
+      '批量联系',
+      { type: 'warning', confirmButtonText: '确认', cancelButtonText: '取消' }
+    )
+    const res = await dmApi.contact(ids, method)
     const parts = []
     if (res.dm_sent)      parts.push(`私信 ${res.dm_sent} 条`)
     if (res.comment_sent) parts.push(`评论 ${res.comment_sent} 条`)
     ElMessage.success(`发送完成：${parts.join('，') || '无新发送'}`)
     loadData()
-  } catch {}
+  } catch (e) {
+    if (e !== 'cancel') ElMessage.error('发送失败')
+  }
 }
 
 async function loadData() {
@@ -273,19 +347,6 @@ function resetFilters() {
   filters.min_followers = 0
   pagination.page = 1
   loadData()
-}
-
-async function batchSendDM() {
-  await ElMessageBox.confirm(
-    `确认对选中的 ${selectedIds.value.length} 位达人发送私信？`,
-    '批量发私信',
-    { type: 'warning', confirmButtonText: '确认发送', cancelButtonText: '取消' }
-  )
-  try {
-    const res = await dmApi.send(selectedIds.value)
-    ElMessage.success(`发送完成：成功 ${res.sent} 条，跳过 ${res.skipped_dup} 条`)
-    loadData()
-  } catch {}
 }
 
 onMounted(loadData)

@@ -132,6 +132,33 @@ async def get_kol(kol_id: int, session: AsyncSession = Depends(get_session)):
     return KOLOut.model_validate(kol)
 
 
+@router.delete("/kols/{kol_id}", tags=["达人"])
+async def delete_kol(kol_id: int, session: AsyncSession = Depends(get_session)):
+    """删除单个达人"""
+    from backend.models.database import KOL
+    kol = await get_kol_by_id(session, kol_id)
+    if not kol:
+        raise HTTPException(status_code=404, detail="达人不存在")
+    await session.delete(kol)
+    await session.commit()
+    return {"ok": True, "id": kol_id}
+
+
+@router.delete("/kols", tags=["达人"])
+async def delete_kols_batch(
+    ids: list[int],
+    session: AsyncSession = Depends(get_session),
+):
+    """批量删除达人，body: [id1, id2, ...]"""
+    from backend.models.database import KOL
+    from sqlalchemy import delete as sa_delete
+    if not ids:
+        raise HTTPException(status_code=400, detail="ids 不能为空")
+    await session.execute(sa_delete(KOL).where(KOL.id.in_(ids)))
+    await session.commit()
+    return {"ok": True, "deleted": len(ids)}
+
+
 # ── 任务管理 ──────────────────────────────────────────────────────────────────
 
 @router.post("/tasks/run", response_model=TaskStatus, tags=["任务"])

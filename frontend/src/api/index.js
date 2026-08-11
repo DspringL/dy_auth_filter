@@ -43,8 +43,10 @@ export const loginApi = {
 
 // ── 达人 ──────────────────────────────────────────────────────────────────────
 export const kolApi = {
-  list: (params) => http.get('/kols', { params }),
-  detail: (id) => http.get(`/kols/${id}`),
+  list:        (params)  => http.get('/kols', { params }),
+  detail:      (id)      => http.get(`/kols/${id}`),
+  delete:      (id)      => http.delete(`/kols/${id}`),
+  deleteBatch: (ids)     => http.delete('/kols', { data: ids }),
 }
 
 // ── 任务 ──────────────────────────────────────────────────────────────────────

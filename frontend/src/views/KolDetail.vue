@@ -170,6 +170,7 @@ import { useRoute } from 'vue-router'
 import { ArrowLeft, Link, Message, Location, ChatDotRound } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { kolApi, dmApi } from '@/api/index.js'
+import { isTauri } from '@/tauri.js'
 import dayjs from 'dayjs'
 
 const route = useRoute()
@@ -198,9 +199,21 @@ function statusTagLabel(s) {
   return { pending: '待发', sent: '已发', failed: '失败' }[s] || s
 }
 
-function openProfile() {
-  if (kol.value?.profile_url) window.open(kol.value.profile_url, '_blank')
-  else ElMessage.warning('该达人无主页链接')
+async function openProfile() {
+  if (!kol.value?.profile_url) {
+    ElMessage.warning('该达人无主页链接')
+    return
+  }
+  if (isTauri()) {
+    try {
+      const { open } = await import('@tauri-apps/plugin-shell')
+      await open(kol.value.profile_url)
+    } catch {
+      window.open(kol.value.profile_url, '_blank')
+    }
+  } else {
+    window.open(kol.value.profile_url, '_blank')
+  }
 }
 
 async function sendContact(method) {
