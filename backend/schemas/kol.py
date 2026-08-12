@@ -50,14 +50,14 @@ class KOLListResponse(BaseModel):
 
 class TaskCreate(BaseModel):
     keywords: list[str]
-    # 搜索类型：user=搜索用户，video=搜索作品（提取作者）
     search_type: Literal["user", "video"] = "user"
     min_followers: Optional[int] = None
     max_followers: Optional[int] = None
     min_total_likes: Optional[int] = None
     require_shop: Optional[bool] = None
-    # 每个关键词最多抓取数量（0=使用系统配置）
     max_per_keyword: Optional[int] = None
+    # 是否抓取 IP 属地（访问用户主页）；开启后可在访问主页时顺带联系
+    fetch_ip: bool = False
     # 联系方式：dm=私信，comment=评论，both=两种都发
     contact_method: Literal["dm", "comment", "both", "none"] = "none"
 

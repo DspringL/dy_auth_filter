@@ -274,55 +274,120 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
                     _task_status[task_id]["total_passed"] = len(passed)
                     task_log(f"筛选完成，通过 {len(passed)}/{len(raw_profiles)} 个达人")
 
-                    # 补全 IP 属地（访问用户主页拦截 XHR）
-                    if passed:
-                        task_log(f"补全 IP 属地（最多 {min(len(passed), 30)} 条）...")
-                        from crawler.services.user_detail import batch_fetch_ip_locations
-                        ip_map = await batch_fetch_ip_locations(
-                            page,
-                            [p.sec_user_id for p in passed],
-                            max_count=min(len(passed), 30),  # 最多补全 30 条
-                        )
-                        for profile in passed:
-                            profile.ip_location = ip_map.get(profile.sec_user_id, "")
-                        task_log(f"IP 属地补全完成，成功 {len([v for v in ip_map.values() if v])} 条")
-
-                    # 入库
+                    # 先入库（IP 属地后续访问主页时再更新）
                     for profile in passed:
                         await upsert_kol(db, profile)
                     await db.commit()
                     task_log(f"达人数据已入库 {len(passed)} 条")
 
-                    # 私信 / 评论
+                    # ── IP 属地 + 联系（合并访问主页，避免重复）────────────────
                     sent_count    = 0
                     comment_count = 0
                     method = getattr(req, 'contact_method', 'none')
-                    task_log(f"联系方式：{method}")
+                    fetch_ip = getattr(req, 'fetch_ip', False)
+                    task_log(f"联系方式：{method}，获取IP属地：{fetch_ip}")
 
-                    if method in ("dm", "both") and passed:
-                        from crawler.services.dm import DMService
-                        task_log(f"开始发私信，共 {len(passed)} 个达人...")
-                        dm_svc = DMService(page)
-                        dm_result = await dm_svc.send_batch(passed)
-                        sent_count = dm_result.get("sent", 0)
-                        task_log(f"私信完成：发送 {sent_count}，跳过重复 {dm_result.get('skipped_dup',0)}，达限 {dm_result.get('skipped_limit',0)}，失败 {dm_result.get('failed',0)}")
-                        for profile in passed:
-                            if dm_svc._record.already_sent(profile.sec_user_id):
-                                await update_kol_dm_status(db, profile.sec_user_id, "sent", datetime.now())
-                        await db.commit()
+                    if passed:
+                        if fetch_ip and method in ("dm", "comment", "both"):
+                            # 访问主页时同步联系 + 获取 IP（减少重复访问）
+                            from crawler.services.user_detail import batch_fetch_ip_and_contact
+                            from crawler.services.dm import DMService
+                            from crawler.services.comment import CommentService
 
-                    if method in ("comment", "both") and passed:
-                        from crawler.services.comment import CommentService
-                        task_log(f"开始发评论，共 {len(passed)} 个达人...")
-                        cmt_svc = CommentService(page)
-                        cmt_result = await cmt_svc.send_batch(passed)
-                        comment_count = cmt_result.get("sent", 0)
-                        task_log(f"评论完成：发送 {comment_count}，跳过重复 {cmt_result.get('skipped_dup',0)}，达限 {cmt_result.get('skipped_limit',0)}，失败 {cmt_result.get('failed',0)}")
-                        _task_status[task_id]["total_commented"] = comment_count
-                        for profile in passed:
-                            if cmt_svc._record.already_commented(profile.sec_user_id):
-                                await update_kol_comment_status(db, profile.sec_user_id, "sent", datetime.now())
-                        await db.commit()
+                            dm_svc  = DMService(page)  if method in ("dm",  "both") else None
+                            cmt_svc = CommentService(page) if method in ("comment", "both") else None
+                            task_log(f"访问用户主页，同步获取 IP 属地并联系（共 {len(passed)} 人）...")
+
+                            ip_map, dm_sent, cmt_sent = await batch_fetch_ip_and_contact(
+                                page, passed, method,
+                                dm_svc=dm_svc, cmt_svc=cmt_svc,
+                                max_count=len(passed),
+                                task_log=task_log,
+                            )
+                            for profile in passed:
+                                profile.ip_location = ip_map.get(profile.sec_user_id, "")
+                            task_log(f"IP属地+联系完成：IP获取 {len([v for v in ip_map.values() if v])}，私信 {dm_sent}，评论 {cmt_sent}")
+
+                            sent_count    = dm_sent
+                            comment_count = cmt_sent
+
+                            # 更新 KOL ip_location 和联系状态
+                            for profile in passed:
+                                await upsert_kol(db, profile)   # 更新 ip_location
+                            if dm_svc:
+                                for profile in passed:
+                                    if dm_svc._record.already_sent(profile.sec_user_id):
+                                        await update_kol_dm_status(db, profile.sec_user_id, "sent", datetime.now())
+                            if cmt_svc:
+                                for profile in passed:
+                                    if cmt_svc._record.already_commented(profile.sec_user_id):
+                                        await update_kol_comment_status(db, profile.sec_user_id, "sent", datetime.now())
+                            await db.commit()
+
+                        elif fetch_ip:
+                            # 仅获取 IP 不联系
+                            from crawler.services.user_detail import batch_fetch_ip_locations
+                            task_log(f"获取 IP 属地（共 {min(len(passed), 30)} 条）...")
+                            ip_map = await batch_fetch_ip_locations(
+                                page, [p.sec_user_id for p in passed],
+                                max_count=min(len(passed), 30),
+                            )
+                            for profile in passed:
+                                profile.ip_location = ip_map.get(profile.sec_user_id, "")
+                            task_log(f"IP 属地获取完成，成功 {len([v for v in ip_map.values() if v])} 条")
+
+                            # 单独联系
+                            if method in ("dm", "both"):
+                                from crawler.services.dm import DMService
+                                task_log(f"开始发私信，共 {len(passed)} 个达人...")
+                                dm_svc = DMService(page)
+                                dm_result = await dm_svc.send_batch(passed)
+                                sent_count = dm_result.get("sent", 0)
+                                task_log(f"私信完成：发送 {sent_count}，跳过重复 {dm_result.get('skipped_dup',0)}，达限 {dm_result.get('skipped_limit',0)}，失败 {dm_result.get('failed',0)}")
+                                for profile in passed:
+                                    if dm_svc._record.already_sent(profile.sec_user_id):
+                                        await update_kol_dm_status(db, profile.sec_user_id, "sent", datetime.now())
+                                await db.commit()
+
+                            if method in ("comment", "both"):
+                                from crawler.services.comment import CommentService
+                                task_log(f"开始发评论，共 {len(passed)} 个达人...")
+                                cmt_svc = CommentService(page)
+                                cmt_result = await cmt_svc.send_batch(passed)
+                                comment_count = cmt_result.get("sent", 0)
+                                task_log(f"评论完成：发送 {comment_count}，跳过重复 {cmt_result.get('skipped_dup',0)}，达限 {cmt_result.get('skipped_limit',0)}，失败 {cmt_result.get('failed',0)}")
+                                _task_status[task_id]["total_commented"] = comment_count
+                                for profile in passed:
+                                    if cmt_svc._record.already_commented(profile.sec_user_id):
+                                        await update_kol_comment_status(db, profile.sec_user_id, "sent", datetime.now())
+                                await db.commit()
+
+                        else:
+                            # 不获取 IP，直接联系
+                            if method in ("dm", "both"):
+                                from crawler.services.dm import DMService
+                                task_log(f"开始发私信，共 {len(passed)} 个达人...")
+                                dm_svc = DMService(page)
+                                dm_result = await dm_svc.send_batch(passed)
+                                sent_count = dm_result.get("sent", 0)
+                                task_log(f"私信完成：发送 {sent_count}，跳过重复 {dm_result.get('skipped_dup',0)}，达限 {dm_result.get('skipped_limit',0)}，失败 {dm_result.get('failed',0)}")
+                                for profile in passed:
+                                    if dm_svc._record.already_sent(profile.sec_user_id):
+                                        await update_kol_dm_status(db, profile.sec_user_id, "sent", datetime.now())
+                                await db.commit()
+
+                            if method in ("comment", "both"):
+                                from crawler.services.comment import CommentService
+                                task_log(f"开始发评论，共 {len(passed)} 个达人...")
+                                cmt_svc = CommentService(page)
+                                cmt_result = await cmt_svc.send_batch(passed)
+                                comment_count = cmt_result.get("sent", 0)
+                                task_log(f"评论完成：发送 {comment_count}，跳过重复 {cmt_result.get('skipped_dup',0)}，达限 {cmt_result.get('skipped_limit',0)}，失败 {cmt_result.get('failed',0)}")
+                                _task_status[task_id]["total_commented"] = comment_count
+                                for profile in passed:
+                                    if cmt_svc._record.already_commented(profile.sec_user_id):
+                                        await update_kol_comment_status(db, profile.sec_user_id, "sent", datetime.now())
+                                await db.commit()
 
                     _task_status[task_id]["total_sent"]      = sent_count
                     _task_status[task_id]["total_commented"] = comment_count
