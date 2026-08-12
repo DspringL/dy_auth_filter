@@ -47,6 +47,9 @@ async def _fill_input(el, text: str, page):
         await page.keyboard.press("End")
         await page.keyboard.type(" ")
         await page.keyboard.press("Backspace")
+
+
+def _get_template() -> str:
     from backend.models.config_store import get_runtime
     return get_runtime("dm.template", get("dm.template",
         "你好 {nickname}，我是某某品牌商务负责人，"
