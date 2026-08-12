@@ -181,7 +181,15 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
         "started_at": datetime.now().isoformat(),
         "finished_at": None,
         "error_msg": None,
-        "logs": [],  # 详细过程日志
+        "logs": [],
+        # 记录本次任务的请求参数，供前端展示
+        "keywords": req.keywords,
+        "search_type": req.search_type,
+        "contact_method": req.contact_method,
+        "max_per_keyword": req.max_per_keyword,
+        "min_followers": req.min_followers,
+        "min_total_likes": req.min_total_likes,
+        "require_shop": req.require_shop,
     }
 
     def task_log(msg: str):
@@ -378,6 +386,13 @@ async def get_task_status(task_id: int):
         finished_at=datetime.fromisoformat(s["finished_at"]) if s.get("finished_at") else None,
         error_msg=s.get("error_msg"),
         logs=s.get("logs", []),
+        keywords=s.get("keywords", []),
+        search_type=s.get("search_type", "user"),
+        contact_method=s.get("contact_method", "none"),
+        max_per_keyword=s.get("max_per_keyword"),
+        min_followers=s.get("min_followers"),
+        min_total_likes=s.get("min_total_likes"),
+        require_shop=s.get("require_shop"),
     )
 
 

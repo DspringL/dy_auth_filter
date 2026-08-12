@@ -64,12 +64,20 @@ class TaskStatus(BaseModel):
     status: str
     total_found: int = 0
     total_passed: int = 0
-    total_sent: int = 0        # 私信发送数
-    total_commented: int = 0   # 评论发送数
+    total_sent: int = 0
+    total_commented: int = 0
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     error_msg: Optional[str] = None
-    logs: list[str] = []       # 任务执行过程日志
+    logs: list[str] = []
+    # 任务参数（用于前端展示筛选条件）
+    keywords: list[str] = []
+    search_type: str = "user"
+    contact_method: str = "none"
+    max_per_keyword: Optional[int] = None
+    min_followers: Optional[int] = None
+    min_total_likes: Optional[int] = None
+    require_shop: Optional[bool] = None
     model_config = ConfigDict(from_attributes=True)
 
 

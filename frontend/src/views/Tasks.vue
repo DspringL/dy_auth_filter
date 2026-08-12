@@ -332,6 +332,28 @@
                   :percentage="99" status="active"
                   :striped="true" :striped-flow="true" class="mt-2"
                 />
+                <!-- 筛选条件摘要 -->
+                <div class="task-filter-info mt-2">
+                  <el-tag size="small" type="info" effect="plain" v-if="t.keywords?.length">
+                    关键词：{{ t.keywords.join('、') }}
+                  </el-tag>
+                  <el-tag size="small" effect="plain" v-if="t.max_per_keyword">
+                    每词 {{ t.max_per_keyword }} 条
+                  </el-tag>
+                  <el-tag size="small" effect="plain" v-if="t.min_followers">
+                    粉丝≥{{ formatNum(t.min_followers) }}
+                  </el-tag>
+                  <el-tag size="small" effect="plain" v-if="t.min_total_likes">
+                    点赞≥{{ formatNum(t.min_total_likes) }}
+                  </el-tag>
+                  <el-tag size="small" type="success" effect="plain" v-if="t.require_shop">
+                    需橱窗
+                  </el-tag>
+                  <el-tag size="small" :type="contactTagType(t.contact_method)" effect="plain"
+                    v-if="t.contact_method && t.contact_method !== 'none'">
+                    {{ contactTagLabel(t.contact_method) }}
+                  </el-tag>
+                </div>
                 <el-alert
                   v-if="t.error_msg" :title="t.error_msg"
                   type="error" :closable="false" show-icon class="mt-2" size="small"
@@ -599,6 +621,13 @@ function statusType(s) { return { running: 'warning', done: 'success', error: 'd
 function statusText(s) { return { running: '执行中', done: '已完成', error: '失败' }[s] || s }
 function timelineType(s) { return { running: 'warning', done: 'success', error: 'danger' }[s] || 'primary' }
 function formatDate(d) { return d ? dayjs(d).format('MM-DD HH:mm:ss') : '—' }
+function formatNum(n) {
+  if (!n) return '0'
+  if (n >= 10000) return (n / 10000).toFixed(1) + '万'
+  return String(n)
+}
+function contactTagType(m) { return { dm: 'primary', comment: 'success', both: 'warning' }[m] || 'info' }
+function contactTagLabel(m) { return { dm: '私信', comment: '评论', both: '私信+评论' }[m] || m }
 
 function pollTask(taskId, searchType) {
   clearInterval(pollTimers[taskId])
@@ -649,6 +678,12 @@ onUnmounted(() => Object.values(pollTimers).forEach(clearInterval))
   word-break: break-all;
 }
 .log-line:last-child { border-bottom: none; }
+.task-filter-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
 .page-title { font-size: 20px; font-weight: 600; margin-bottom: 16px; color: #1a1a1a; }
 .form-card { border-radius: 8px; }
 .main-tabs { margin-bottom: 0; }
