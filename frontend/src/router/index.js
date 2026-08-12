@@ -23,7 +23,7 @@ const router = createRouter({
 
 router.beforeEach((to) => {
   NProgress.start()
-  document.title = `${to.meta.title || '管理后台'} - 抖音达人系统`
+  document.title = `${to.meta.title || '管理后台'} - 抖音达人联络官`
 })
 router.afterEach(() => NProgress.done())
 

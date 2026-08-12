@@ -4,7 +4,7 @@
     <el-aside :width="collapsed ? '64px' : '220px'" class="sidebar">
       <div class="logo" :class="{ collapsed }">
         <el-icon size="24" color="#fff"><VideoCamera /></el-icon>
-        <span v-if="!collapsed" class="logo-text">抖音达人系统</span>
+        <span v-if="!collapsed" class="logo-text">抖音达人联络官</span>
       </div>
 
       <el-menu
