@@ -49,22 +49,47 @@ export async function waitForBackend(maxWait = 90) {
     // ── 方案2：fetch 轮询 http://127.0.0.1:8000/ ──────────────────────────
     // CSP=null，无限制，最直接可靠
     ;(async () => {
+      let attempt = 0
+      const logLines = [`[frontend] waitForBackend started at ${new Date().toISOString()}`]
+
+      const flushLog = () => {
+        try {
+          const existing = localStorage.getItem('startup_log') || ''
+          localStorage.setItem('startup_log', existing + logLines.join('\n') + '\n')
+        } catch {}
+        // 同时尝试写 /tmp（在 Tauri 环境下通过 invoke）
+        try {
+          import('@tauri-apps/api/core').then(({ invoke }) => {
+            invoke('write_startup_log', { content: logLines.join('\n') + '\n' }).catch(() => {})
+          })
+        } catch {}
+      }
+
       while (!resolved) {
+        attempt++
+        const t0 = Date.now()
         try {
           const resp = await fetch('http://127.0.0.1:8000/', {
             signal: AbortSignal.timeout(2000),
             cache: 'no-store',
           })
+          const elapsed = Date.now() - t0
+          logLines.push(`[${new Date().toISOString()}] fetch #${attempt}: HTTP ${resp.status} (${elapsed}ms)`)
           if (resp.ok) {
+            logLines.push(`[${new Date().toISOString()}] ✅ 后端就绪 via fetch`)
+            flushLog()
             clearTimeout(timeoutId)
             done(true, 'fetch poll')
             return
           }
-        } catch {
-          // 后端还没起来，继续等
+        } catch (e) {
+          const elapsed = Date.now() - t0
+          logLines.push(`[${new Date().toISOString()}] fetch #${attempt}: 失败 ${e.message} (${elapsed}ms)`)
+          if (attempt % 5 === 0) flushLog()
         }
         await new Promise(r => setTimeout(r, 1500))
       }
+      flushLog()
     })()
 
     // ── 方案3：invoke check_backend + 延迟确认 ────────────────────────────

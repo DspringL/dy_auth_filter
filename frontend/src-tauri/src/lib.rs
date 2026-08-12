@@ -8,11 +8,49 @@ use tauri::{AppHandle, Emitter, Manager, State};
 /// 全局后端进程状态
 struct BackendProcess(Mutex<Option<Child>>);
 
+// ── 日志辅助 ──────────────────────────────────────────────────────────────────
+
+fn chrono_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let h = (secs % 86400) / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    format!("{:02}:{:02}:{:02}", h, m, s)
+}
+
+fn append_log(path: &str, msg: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true).append(true).open(path)?;
+    f.write_all(msg.as_bytes())?;
+    Ok(())
+}
+
 /// 启动 Python 后端服务
 /// 优先使用打包的 sidecar 可执行文件，开发模式下退回 uvicorn
 fn start_backend(app: &AppHandle) -> std::io::Result<Child> {
     let resource_path = app.path().resource_dir().unwrap_or_default();
     let sidecar_path = resource_path.join("binaries").join(get_sidecar_name());
+
+    // ── 启动日志 ──────────────────────────────────────────────────────────
+    let log_path = "/tmp/douyinkol_startup.log";
+    let _ = std::fs::write(
+        log_path,
+        format!(
+            "[{ts}] === 应用启动 ===\n\
+             [{ts}] resource_dir: {res}\n\
+             [{ts}] sidecar_path: {sc}\n\
+             [{ts}] sidecar_exists: {ex}\n",
+            ts = chrono_now(),
+            res = resource_path.display(),
+            sc = sidecar_path.display(),
+            ex = sidecar_path.exists(),
+        ),
+    );
 
     if sidecar_path.exists() {
         // 生产模式：运行打包的可执行文件
@@ -20,6 +58,12 @@ fn start_backend(app: &AppHandle) -> std::io::Result<Child> {
         let data_dir = app.path()
             .app_data_dir()
             .unwrap_or(resource_path.clone());
+
+        let _ = append_log(log_path, &format!(
+            "[{}] 模式: sidecar\n[{}] data_dir: {}\n",
+            chrono_now(), chrono_now(), data_dir.display()
+        ));
+
         Command::new(sidecar_path)
             .env("DYAUTH_RESOURCE_DIR", data_dir.to_str().unwrap_or("."))
             .spawn()
@@ -42,6 +86,11 @@ fn start_backend(app: &AppHandle) -> std::io::Result<Child> {
         };
 
         println!("开发模式：project_root={} python={}", project_root.display(), python_cmd);
+
+        let _ = append_log("/tmp/douyinkol_startup.log", &format!(
+            "[{}] 模式: dev uvicorn\n[{}] project_root: {}\n[{}] python: {}\n",
+            chrono_now(), chrono_now(), project_root.display(), chrono_now(), python_cmd
+        ));
 
         Command::new(&python_cmd)
             .current_dir(&project_root)
@@ -77,6 +126,12 @@ fn get_sidecar_name() -> String {
 fn check_backend(state: State<BackendProcess>) -> bool {
     let guard = state.0.lock().unwrap();
     guard.is_some()
+}
+
+/// Tauri 命令：写启动日志到 /tmp（前端调用）
+#[tauri::command]
+fn write_startup_log(content: String) {
+    let _ = append_log("/tmp/douyinkol_startup.log", &content);
 }
 
 /// Tauri 命令：重启后端
@@ -119,25 +174,47 @@ pub fn run() {
             let state = app.state::<BackendProcess>();
             match start_backend(&app_handle) {
                 Ok(child) => {
-                    println!("后端已启动，PID: {}", child.id());
+                    let pid = child.id();
+                    println!("后端已启动，PID: {}", pid);
+                    let _ = append_log("/tmp/douyinkol_startup.log", &format!(
+                        "[{}] ✅ sidecar 启动成功 PID={}\n", chrono_now(), pid
+                    ));
                     *state.0.lock().unwrap() = Some(child);
                 }
                 Err(e) => {
                     eprintln!("后端启动失败: {e}");
-                    // 即使后端启动失败，窗口仍然打开（可手动重试）
+                    let _ = append_log("/tmp/douyinkol_startup.log", &format!(
+                        "[{}] ❌ sidecar 启动失败: {}\n", chrono_now(), e
+                    ));
                 }
             }
 
         // 等待后端就绪后通知前端（另起线程轮询，不阻塞 UI）
             let handle = app_handle.clone();
             std::thread::spawn(move || {
-                for _ in 0..60 {
+                let log = "/tmp/douyinkol_startup.log";
+                let _ = append_log(log, &format!("[{}] 开始轮询后端 HTTP...\n", chrono_now()));
+                for i in 0..60 {
                     std::thread::sleep(std::time::Duration::from_millis(1000));
-                    if let Ok(resp) = reqwest::blocking::get("http://127.0.0.1:8000/") {
-                        if resp.status().is_success() {
-                            println!("后端已就绪");
-                            let _ = handle.emit("backend-ready", ());
-                            break;
+                    match reqwest::blocking::get("http://127.0.0.1:8000/") {
+                        Ok(resp) => {
+                            let status = resp.status();
+                            let _ = append_log(log, &format!(
+                                "[{}] 轮询 #{}: HTTP {}\n", chrono_now(), i+1, status
+                            ));
+                            if status.is_success() {
+                                let _ = append_log(log, &format!(
+                                    "[{}] ✅ 后端就绪！emit backend-ready\n", chrono_now()
+                                ));
+                                println!("后端已就绪");
+                                let _ = handle.emit("backend-ready", ());
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            let _ = append_log(log, &format!(
+                                "[{}] 轮询 #{}: 连接失败 {}\n", chrono_now(), i+1, e
+                            ));
                         }
                     }
                 }
@@ -157,7 +234,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![check_backend, restart_backend])
+        .invoke_handler(tauri::generate_handler![check_backend, restart_backend, write_startup_log])
         .run(tauri::generate_context!())
         .expect("Tauri 应用运行失败");
 }
