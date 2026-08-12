@@ -165,26 +165,40 @@ class CommentService:
         """
         page = self._page
         result: list[str] = []
+        ip_result: list[str] = []
         done = asyncio.Event()
 
         async def on_response(response):
-            if POST_LIST_API not in response.url:
+            # 捕获最新作品 ID
+            if POST_LIST_API in response.url and response.status == 200:
+                try:
+                    body = await response.body()
+                    data = json.loads(body)
+                    aweme_list = data.get("aweme_list") or []
+                    if aweme_list:
+                        aweme_id = aweme_list[0].get("aweme_id", "")
+                        if aweme_id:
+                            result.append(aweme_id)
+                except Exception as e:
+                    logger.debug(f"解析作品列表失败: {e}")
+                finally:
+                    done.set()
                 return
-            if response.status != 200:
-                done.set()
-                return
-            try:
-                body = await response.body()
-                data = json.loads(body)
-                aweme_list = data.get("aweme_list") or []
-                if aweme_list:
-                    aweme_id = aweme_list[0].get("aweme_id", "")
-                    if aweme_id:
-                        result.append(aweme_id)
-            except Exception as e:
-                logger.debug(f"解析作品列表失败: {e}")
-            finally:
-                done.set()
+
+            # 顺带捕获 IP 属地（路过就拿）
+            if "/aweme/v1/web/user/profile/other/" in response.url and response.status == 200:
+                try:
+                    body = await response.body()
+                    data = json.loads(body)
+                    user = data.get("user") or {}
+                    ip = user.get("ip_location") or user.get("province") or ""
+                    city = user.get("city") or ""
+                    if ip and city and city not in ip:
+                        ip = f"{ip} {city}"
+                    if ip.strip():
+                        ip_result.append(ip.strip())
+                except Exception:
+                    pass
 
         page.on("response", on_response)
         try:
@@ -199,7 +213,7 @@ class CommentService:
         finally:
             page.remove_listener("response", on_response)
 
-        return result[0] if result else ""
+        return result[0] if result else "", ip_result[0] if ip_result else ""
 
     # ── 发布评论 ──────────────────────────────────────────────────────────────
 
@@ -216,8 +230,11 @@ class CommentService:
         page = self._page
         nickname = profile.nickname or profile.uid
 
-        # Step 1：获取最新作品 ID
-        aweme_id = await self._get_latest_aweme_id(profile.sec_user_id)
+        # Step 1：获取最新作品 ID（顺带采集 IP 属地）
+        aweme_id, ip = await self._get_latest_aweme_id(profile.sec_user_id)
+        if ip and not profile.ip_location:
+            profile.ip_location = ip
+            logger.info(f"[评论] 顺带采集 IP：{nickname} → {ip}")
         if not aweme_id:
             logger.warning(f"「{nickname}」未获取到最新作品，跳过评论")
             return "", False
@@ -300,10 +317,10 @@ class CommentService:
             )
             logger.info(f"[评论] 重新 focused: {focused[:60]}")
 
-        # Step 6：逐字输入（delay=30ms，比原来快但仍模拟人类）
+        # Step 6：逐字输入（delay=8ms，快速但仍触发 React onChange）
         try:
-            await page.keyboard.type(comment_text, delay=30)
-            await asyncio.sleep(random.uniform(0.5, 1.0))
+            await page.keyboard.type(comment_text, delay=8)
+            await asyncio.sleep(random.uniform(0.3, 0.6))
             logger.info(f"[评论] 输入完成")
         except Exception as e:
             logger.warning(f"「{nickname}」输入评论失败：{e}")

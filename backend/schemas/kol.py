@@ -56,9 +56,6 @@ class TaskCreate(BaseModel):
     min_total_likes: Optional[int] = None
     require_shop: Optional[bool] = None
     max_per_keyword: Optional[int] = None
-    # 是否抓取 IP 属地（访问用户主页）；开启后可在访问主页时顺带联系
-    fetch_ip: bool = False
-    # 联系方式：dm=私信，comment=评论，both=两种都发
     contact_method: Literal["dm", "comment", "both", "none"] = "none"
 
 

@@ -191,6 +191,16 @@ class DMService:
             await page.goto(profile_url, wait_until="domcontentloaded", timeout=30_000)
             await asyncio.sleep(random.uniform(2.5, 4.0))
 
+            # ── 顺带采集 IP 属地（路过就拿，不单独访问） ────────────────────
+            try:
+                from crawler.services.user_detail import fetch_ip_location
+                ip = await fetch_ip_location(page, profile.sec_user_id)
+                if ip:
+                    profile.ip_location = ip
+                    logger.info(f"[DM] 顺带采集 IP：{nickname} → {ip}")
+            except Exception as _e:
+                logger.debug(f"[DM] IP采集失败（忽略）：{_e}")
+
             # ── 截图诊断（仅首次）──────────────────────────────────────────
             if not getattr(self, '_dm_screenshot_taken', False):
                 self._dm_screenshot_taken = True
@@ -278,9 +288,9 @@ class DMService:
 
             await input_box.click()
             await asyncio.sleep(0.5)
-            # 逐字输入，delay=20ms 兼顾速度与反爬检测
-            await page.keyboard.type(message, delay=20)
-            await asyncio.sleep(random.uniform(0.3, 0.8))
+            # 逐字输入，delay=8ms 快速输入
+            await page.keyboard.type(message, delay=8)
+            await asyncio.sleep(random.uniform(0.3, 0.6))
             # ── 点击发送 ─────────────────────────────────────────────────────
             send_selectors = [
                 'button[data-e2e="chat-send-btn"]',

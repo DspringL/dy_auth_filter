@@ -33,14 +33,6 @@
                 <el-form-item label="必须有橱窗">
                   <el-switch v-model="searchForm.require_shop" />
                 </el-form-item>
-                <el-form-item label="获取IP属地">
-                  <el-switch v-model="searchForm.fetch_ip" />
-                  <span class="unit-hint">
-                    {{ searchForm.fetch_ip && searchForm.contact_method !== 'none'
-                      ? '访问主页时同步联系（减少重复访问）'
-                      : '访问用户主页获取IP所在省份' }}
-                  </span>
-                </el-form-item>
                 <el-form-item label="每关键词数量">
                   <el-input-number v-model="searchForm.max_per_keyword" :min="1" :max="200" :step="10"
                     controls-position="right" style="width:140px" />
@@ -89,14 +81,6 @@
                   <el-input-number v-model="videoForm.max_per_keyword" :min="1" :max="200" :step="10"
                     controls-position="right" style="width:140px" />
                   <span class="unit-hint">每个关键词最多抓取的作品作者数</span>
-                </el-form-item>
-                <el-form-item label="获取IP属地">
-                  <el-switch v-model="videoForm.fetch_ip" />
-                  <span class="unit-hint">
-                    {{ videoForm.fetch_ip && videoForm.contact_method !== 'none'
-                      ? '访问主页时同步联系（减少重复访问）'
-                      : '访问用户主页获取IP所在省份' }}
-                  </span>
                 </el-form-item>
                 <el-divider content-position="left" class="div-sm">联系方式</el-divider>
                 <el-form-item label="联系方式">
@@ -392,7 +376,7 @@ const tasks = taskStore.tasks
 // ── 搜索用户表单 ──────────────────────────────────────────────────────────────
 const searchForm = ref({
   keywords: [], min_followers: 10000, min_total_likes: 10000,
-  require_shop: false, contact_method: 'none', max_per_keyword: 50, fetch_ip: false,
+  require_shop: false, contact_method: 'none', max_per_keyword: 50,
 })
 const searchRules = { keywords: [{ required: true, message: '请至少输入一个关键词', trigger: 'change' }] }
 const searchFormRef   = ref(null)
@@ -415,7 +399,7 @@ async function submitSearch() {
 // ── 搜索作品表单 ──────────────────────────────────────────────────────────────
 const videoForm = ref({
   keywords: [], min_followers: 10000, min_total_likes: 10000,
-  require_shop: false, contact_method: 'none', max_per_keyword: 50, fetch_ip: false,
+  require_shop: false, contact_method: 'none', max_per_keyword: 50,
 })
 const videoFormRef    = ref(null)
 const videoSubmitting = ref(false)
