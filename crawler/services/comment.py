@@ -17,6 +17,13 @@ from loguru import logger
 from playwright.async_api import Page, TimeoutError as PWTimeout
 
 from crawler.services.search import KOLProfile
+from crawler.services.browser_actions import (
+    editor_text,
+    fill_editor,
+    find_first_visible,
+    first_video_id,
+    render_single_line,
+)
 from crawler.utils.config import get, ROOT_DIR
 
 # 仅路径保持模块级常量
@@ -25,28 +32,8 @@ POST_LIST_API   = "/aweme/v1/web/aweme/post/"
 
 
 async def _fill_input(el, text: str, page):
-    """
-    通用输入填充：
-    - textarea / input：用 fill() 直接填充
-    - contenteditable div：用 evaluate 设置内容并触发 React 能感知的事件
-    """
-    tag = await el.evaluate("e => e.tagName.toLowerCase()")
-    if tag in ("input", "textarea"):
-        await el.fill(text)
-    else:
-        await el.click()
-        await el.evaluate(
-            """(el, txt) => {
-                el.textContent = txt;
-                el.dispatchEvent(new Event('input', {bubbles: true}));
-                el.dispatchEvent(new Event('change', {bubbles: true}));
-            }""",
-            text,
-        )
-        # 末尾补空格再退格，确保 React onChange 感知到内容变化
-        await page.keyboard.press("End")
-        await page.keyboard.type(" ")
-        await page.keyboard.press("Backspace")
+    """兼容旧调用点，实际使用整段快速填充。"""
+    await fill_editor(el, text, page)
 
 
 def _get_template() -> str:
@@ -128,17 +115,29 @@ class CommentService:
         daily_limit = _get_daily_limit()
         interval_min, interval_max = _get_interval()
 
+        candidates: list[KOLProfile] = []
+        seen_user_ids: set[str] = set()
         for profile in profiles:
-            if self._record.today_count() >= daily_limit:
-                logger.warning(f"今日评论已达上限 {daily_limit} 条，停止")
-                stats["skipped_limit"] += len(profiles) - profiles.index(profile)
-                break
-
-            if self._record.already_commented(profile.sec_user_id):
+            if (
+                profile.sec_user_id in seen_user_ids
+                or self._record.already_commented(profile.sec_user_id)
+            ):
                 logger.debug(f"已评论过「{profile.nickname}」，跳过")
                 stats["skipped_dup"] += 1
                 continue
+            seen_user_ids.add(profile.sec_user_id)
+            candidates.append(profile)
 
+        remaining = max(0, daily_limit - self._record.today_count())
+        targets = candidates[:remaining]
+        stats["skipped_limit"] = len(candidates) - len(targets)
+        if stats["skipped_limit"]:
+            logger.warning(
+                f"今日评论额度仅剩 {remaining} 条，"
+                f"另有 {stats['skipped_limit']} 条因达到上限跳过"
+            )
+
+        for index, profile in enumerate(targets):
             aweme_id, ok = await self._comment_one(profile)
             if ok:
                 self._record.record(profile.sec_user_id, profile.nickname, aweme_id)
@@ -147,7 +146,9 @@ class CommentService:
                     f"✅ 已评论 → 「{profile.nickname}」作品 {aweme_id}"
                     f"（今日 {self._record.today_count()}/{daily_limit}）"
                 )
-                await asyncio.sleep(random.randint(interval_min, interval_max))
+                # 最后一条完成后无需再等待一个发送间隔。
+                if index < len(targets) - 1:
+                    await asyncio.sleep(random.randint(interval_min, interval_max))
             else:
                 stats["failed"] += 1
 
@@ -159,14 +160,13 @@ class CommentService:
 
     # ── 获取最新作品 ID ───────────────────────────────────────────────────────
 
-    async def _get_latest_aweme_id(self, sec_user_id: str) -> str:
+    async def _get_latest_aweme_id(self, sec_user_id: str) -> tuple[str, str]:
         """
         访问达人主页，拦截 /aweme/v1/web/aweme/post/ 接口获取最新作品 ID。
         """
         page = self._page
         result: list[str] = []
         ip_result: list[str] = []
-        done = asyncio.Event()
 
         async def on_response(response):
             # 捕获最新作品 ID
@@ -178,11 +178,9 @@ class CommentService:
                     if aweme_list:
                         aweme_id = aweme_list[0].get("aweme_id", "")
                         if aweme_id:
-                            result.append(aweme_id)
+                            result.append(str(aweme_id))
                 except Exception as e:
                     logger.debug(f"解析作品列表失败: {e}")
-                finally:
-                    done.set()
                 return
 
             # 顺带捕获 IP 属地（路过就拿）
@@ -203,11 +201,19 @@ class CommentService:
         page.on("response", on_response)
         try:
             profile_url = f"https://www.douyin.com/user/{sec_user_id}"
-            await page.goto("about:blank", timeout=5000)
-            await page.goto(profile_url, wait_until="domcontentloaded", timeout=25_000)
-            await asyncio.wait_for(done.wait(), timeout=12.0)
-        except asyncio.TimeoutError:
-            logger.debug(f"获取最新作品超时：{sec_user_id[:16]}...")
+            current_url = page.url.split("?", 1)[0].rstrip("/")
+            if current_url != profile_url.rstrip("/"):
+                await page.goto(profile_url, wait_until="domcontentloaded", timeout=25_000)
+
+            # 接口可能返回空 aweme_list（本次 js-reverse 实测即为此情况），
+            # 因此同时读取主页已经渲染出的 /video/{id} 链接作为可靠兜底。
+            deadline = time.monotonic() + 8.0
+            while time.monotonic() < deadline and not result:
+                dom_aweme_id = await first_video_id(page)
+                if dom_aweme_id:
+                    result.append(dom_aweme_id)
+                    break
+                await asyncio.sleep(0.1)
         except Exception as e:
             logger.debug(f"访问主页失败：{e}")
         finally:
@@ -222,16 +228,22 @@ class CommentService:
         对单个达人的最新作品发评论。
         基于 js-reverse 分析结论：
         - 评论输入框是 div.notranslate.public-DraftEditor-content（Draft.js）
-        - 激活方式：坐标点击底部评论栏区域
-        - 输入方式：page.keyboard.type(text, delay=N) 逐字输入
-        - 发送方式：按 Enter 键，触发 POST /aweme/v1/web/comment/publish
+        - 激活方式：点击 comment-input-inner-container 占位容器
+        - 输入方式：keyboard.insert_text 整段输入
+        - 发送方式：点击发布或按 Enter，触发 POST /aweme/v1/web/comment/publish
         返回 (aweme_id, success)
         """
         page = self._page
         nickname = profile.nickname or profile.uid
 
-        # Step 1：获取最新作品 ID（顺带采集 IP 属地）
-        aweme_id, ip = await self._get_latest_aweme_id(profile.sec_user_id)
+        started = time.monotonic()
+
+        # Step 1：优先复用搜索/私信阶段已经拿到的作品 ID；仅缺失时访问主页。
+        aweme_id = profile.latest_aweme_id
+        ip = ""
+        if not aweme_id:
+            aweme_id, ip = await self._get_latest_aweme_id(profile.sec_user_id)
+            profile.latest_aweme_id = aweme_id
         if ip and not profile.ip_location:
             profile.ip_location = ip
             logger.info(f"[评论] 顺带采集 IP：{nickname} → {ip}")
@@ -243,100 +255,93 @@ class CommentService:
         video_url = f"https://www.douyin.com/video/{aweme_id}"
         logger.info(f"[评论] 导航到作品页：{video_url}")
         try:
-            await page.goto("about:blank", timeout=5000)
             await page.goto(video_url, wait_until="domcontentloaded", timeout=25_000)
         except Exception as e:
             logger.warning(f"「{nickname}」导航到作品页失败：{e}")
             return aweme_id, False
 
-        await asyncio.sleep(random.uniform(3.0, 4.5))
-
         # Step 3：构造评论文本
-        comment_text = (
-            _get_template()
-            .replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
-            .format(nickname=nickname)
-            .strip()
-        )
+        comment_text = render_single_line(_get_template(), nickname)
         logger.info(f"[评论] 准备发送（{len(comment_text)} 字）：{comment_text[:50]}...")
 
-        # Step 4：找到评论输入框并点击激活
-        # 截图确认：视频详情页底部评论输入框是 input[placeholder*="留下你的精彩评论吧"]
-        # 点击后页面滚动，输入框移到顶部（y≈85），但焦点已在输入框上
-        input_sel = None
-        input_el = None
-
-        for sel in [
+        # Step 4：找到评论输入框；新版页面需先点击占位容器完成激活。
+        direct_input_selectors = [
             'input[placeholder*="留下你的精彩评论吧"]',
             'input[placeholder*="友善评论"]',
             'input[placeholder*="评论"]',
             'input[placeholder*="说点什么"]',
             '[data-e2e="comment-input"]',
-            # 评论区列表底部的输入框
             '[class*="commentInput"] input',
             '[class*="comment-input"] input',
-            '[class*="DraftEditor-content"]',
-        ]:
-            try:
-                el = page.locator(sel).first
-                if await el.count() > 0:
-                    input_sel = sel
-                    input_el = el
-                    break
-            except Exception:
-                pass
+            'div[contenteditable="true"].public-DraftEditor-content',
+            'div[contenteditable="true"][class*="DraftEditor-content"]',
+        ]
+
+        # 新版页面初始只有一个“留下你的精彩评论吧”占位容器，点击后才创建
+        # Draft.js contenteditable。先做一次即时探测，再等待并激活占位容器。
+        input_el = await find_first_visible(page, direct_input_selectors, timeout=0.2)
+        if input_el is None:
+            placeholder = await find_first_visible(page, [
+                'div.comment-input-inner-container',
+                '[class*="comment-input-inner-container"]',
+                '[data-e2e="comment-input-placeholder"]',
+            ], timeout=10.0)
+            if placeholder is not None:
+                await placeholder.click()
+                input_el = await find_first_visible(page, direct_input_selectors, timeout=3.0)
 
         if input_el is None:
             logger.warning(f"「{nickname}」未找到评论输入框")
             return aweme_id, False
 
-        logger.info(f"[评论] 找到输入框：{input_sel}")
+        logger.info("[评论] 已激活评论输入框")
 
-        # 点击输入框（会触发页面滚动，输入框移到顶部，焦点正确）
-        await input_el.click()
-        await asyncio.sleep(1.0)
-
-        # 确认焦点已在输入框
-        focused_tag = await page.evaluate(
-            "() => document.activeElement ? document.activeElement.tagName + '|' + (document.activeElement.placeholder||'') : 'none'"
-        )
-        logger.info(f"[评论] focused: {focused_tag}")
-
-        # Step 5：直接用 fill 填充（input 元素支持 fill）
-        tag = await input_el.evaluate("el => el.tagName.toLowerCase()")
-        if tag in ("input", "textarea"):
-            await input_el.fill(comment_text)
-        else:
-            # contenteditable：逐字输入
-            await page.keyboard.type(comment_text, delay=8)
-        await asyncio.sleep(random.uniform(0.3, 0.6))
-        logger.info(f"[评论] 输入完成")
+        # Step 5：整段填充，避免 humanize="careful" 将逐字输入放大到几十秒。
+        await _fill_input(input_el, comment_text, page)
+        logger.info("[评论] 输入完成")
 
         # Step 6：点击发送按钮（截图确认：输入后右侧出现「发布」按钮）
-        sent = False
-        for sel in [
+        send_selectors = [
             'button[data-e2e="comment-submit"]',
             'button:has-text("发布")',
             'button:has-text("发送")',
             '[class*="submit"]',
             '[class*="btn-send"]',
-        ]:
+        ]
+
+        try:
+            async with page.expect_response(
+                lambda response: "/aweme/v1/web/comment/publish" in response.url,
+                timeout=10_000,
+            ) as response_info:
+                send_btn = await find_first_visible(page, send_selectors, timeout=0.8)
+                if send_btn is not None and await send_btn.is_enabled():
+                    await send_btn.click()
+                    logger.info("[评论] 点击发布按钮")
+                else:
+                    await input_el.press("Enter")
+                    logger.info("[评论] Enter 键发送")
+
+            response = await response_info.value
+            if not response.ok:
+                logger.warning(f"「{nickname}」评论接口返回 HTTP {response.status}")
+                return aweme_id, False
             try:
-                btn = page.locator(sel).first
-                if await btn.count() > 0 and await btn.is_visible() and await btn.is_enabled():
-                    await btn.click()
-                    sent = True
-                    logger.info(f"[评论] 点击发送按钮：{sel}")
-                    await asyncio.sleep(1.5)
-                    break
+                body = await response.json()
+                if body.get("status_code", 0) != 0:
+                    logger.warning(
+                        f"「{nickname}」评论接口业务码异常："
+                        f"{body.get('status_code')} {body.get('status_msg', '')}"
+                    )
+                    return aweme_id, False
             except Exception:
+                # 非 JSON 响应仍以 HTTP 成功为准。
                 pass
+        except PWTimeout:
+            if (await editor_text(input_el)).strip():
+                logger.warning(f"「{nickname}」未捕获到评论发布响应")
+                return aweme_id, False
+            logger.warning(f"「{nickname}」发布响应未捕获，但输入框已清空，按成功处理")
 
-        if not sent:
-            # 回退：Enter 键
-            await input_el.press("Enter")
-            await asyncio.sleep(1.5)
-            logger.info("[评论] Enter 键发送")
-            sent = True
-
-        return aweme_id, sent
+        logger.info(f"[评论] 单条操作耗时 {time.monotonic() - started:.2f}s")
+        return aweme_id, True

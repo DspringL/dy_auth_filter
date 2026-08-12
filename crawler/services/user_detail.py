@@ -49,10 +49,6 @@ async def fetch_ip_location(page: Page, sec_user_id: str) -> str:
     page.on("response", on_response)
     try:
         profile_url = f"https://www.douyin.com/user/{sec_user_id}"
-        try:
-            await page.goto("about:blank", timeout=5000)
-        except Exception:
-            pass
         await page.goto(profile_url, wait_until="domcontentloaded", timeout=25_000)
         await asyncio.wait_for(done.wait(), timeout=10.0)
     except asyncio.TimeoutError:

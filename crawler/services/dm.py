@@ -16,6 +16,13 @@ from loguru import logger
 from playwright.async_api import Page, TimeoutError as PWTimeout
 
 from crawler.services.search import KOLProfile
+from crawler.services.browser_actions import (
+    editor_text,
+    fill_editor,
+    find_first_visible,
+    first_video_id,
+    render_single_line,
+)
 from crawler.utils.config import get, ROOT_DIR
 
 # 仅 SENT_FILE 保持模块级常量（路径不会被前端修改）
@@ -23,30 +30,8 @@ SENT_FILE: Path = ROOT_DIR / get("dm.sent_record_file", "data/dm_sent.json")
 
 
 async def _fill_input(el, text: str, page):
-    """
-    通用输入填充：
-    - textarea / input：用 fill() 直接填充
-    - contenteditable div：用 evaluate 设置 textContent 并触发 input 事件，
-      再用 keyboard.type 补一个空格+退格确保抖音 React 能感知到变化
-    """
-    tag = await el.evaluate("e => e.tagName.toLowerCase()")
-    if tag in ("input", "textarea"):
-        await el.fill(text)
-    else:
-        # contenteditable
-        await el.click()
-        await el.evaluate(
-            """(el, txt) => {
-                el.textContent = txt;
-                el.dispatchEvent(new Event('input', {bubbles: true}));
-                el.dispatchEvent(new Event('change', {bubbles: true}));
-            }""",
-            text,
-        )
-        # 末尾补一个空格再退格，触发 React onChange
-        await page.keyboard.press("End")
-        await page.keyboard.type(" ")
-        await page.keyboard.press("Backspace")
+    """兼容旧调用点，实际使用整段快速填充。"""
+    await fill_editor(el, text, page)
 
 
 def _get_template() -> str:
@@ -132,17 +117,29 @@ class DMService:
         daily_limit = _get_daily_limit()
         interval_min, interval_max = _get_interval()
 
+        candidates: list[KOLProfile] = []
+        seen_user_ids: set[str] = set()
         for profile in profiles:
-            if self._record.today_count() >= daily_limit:
-                logger.warning(f"今日私信已达上限 {daily_limit} 条，停止发送")
-                stats["skipped_limit"] += len(profiles) - profiles.index(profile)
-                break
-
-            if self._record.already_sent(profile.sec_user_id):
+            if (
+                profile.sec_user_id in seen_user_ids
+                or self._record.already_sent(profile.sec_user_id)
+            ):
                 logger.debug(f"已发送过「{profile.nickname}」，跳过")
                 stats["skipped_dup"] += 1
                 continue
+            seen_user_ids.add(profile.sec_user_id)
+            candidates.append(profile)
 
+        remaining = max(0, daily_limit - self._record.today_count())
+        targets = candidates[:remaining]
+        stats["skipped_limit"] = len(candidates) - len(targets)
+        if stats["skipped_limit"]:
+            logger.warning(
+                f"今日私信额度仅剩 {remaining} 条，"
+                f"另有 {stats['skipped_limit']} 条因达到上限跳过"
+            )
+
+        for index, profile in enumerate(targets):
             ok = await self._send_one(profile)
             if ok:
                 self._record.record(profile.sec_user_id, profile.nickname)
@@ -151,9 +148,11 @@ class DMService:
                     f"✅ 已发送私信 → 「{profile.nickname}」"
                     f"（今日 {self._record.today_count()}/{daily_limit}）"
                 )
-                wait = random.randint(interval_min, interval_max)
-                logger.debug(f"等待 {wait}s 后发送下一条...")
-                await asyncio.sleep(wait)
+                # 最后一条完成后立即返回，避免无意义地再等待 10~30 秒。
+                if index < len(targets) - 1:
+                    wait = random.randint(interval_min, interval_max)
+                    logger.debug(f"等待 {wait}s 后发送下一条...")
+                    await asyncio.sleep(wait)
             else:
                 stats["failed"] += 1
 
@@ -173,15 +172,7 @@ class DMService:
         nickname = profile.nickname or profile.uid
         # 强制去掉换行符，确保整条模板作为一条消息发送
         # 抖音限制：对方回复前只能发一条，多行会被拆成多条导致失败
-        raw_template = _get_template()
-        message = (
-            raw_template
-            .replace("\r\n", " ")
-            .replace("\n", " ")
-            .replace("\r", " ")
-            .format(nickname=nickname)
-            .strip()
-        )
+        message = render_single_line(_get_template(), nickname)
         logger.info(f"[DM] 准备发送（{len(message)} 字）：{message[:50]}...")
         profile_url = profile.profile_url
 
@@ -189,75 +180,51 @@ class DMService:
             logger.warning(f"「{nickname}」无主页链接，跳过")
             return False
 
-        try:
-            logger.info(f"导航到主页：{profile_url}")
-            await page.goto(profile_url, wait_until="domcontentloaded", timeout=30_000)
-            await asyncio.sleep(random.uniform(2.5, 4.0))
+        profile_api = "/aweme/v1/web/user/profile/other/"
+        post_api = "/aweme/v1/web/aweme/post/"
 
-            # ── 顺带采集 IP 属地（路过就拿，不单独访问） ────────────────────
+        async def on_profile_response(response):
+            if response.status != 200:
+                return
             try:
-                from crawler.services.user_detail import fetch_ip_location
-                ip = await fetch_ip_location(page, profile.sec_user_id)
-                if ip:
-                    profile.ip_location = ip
-                    logger.info(f"[DM] 顺带采集 IP：{nickname} → {ip}")
-            except Exception as _e:
-                logger.debug(f"[DM] IP采集失败（忽略）：{_e}")
+                if profile_api in response.url:
+                    data = await response.json()
+                    user = data.get("user") or {}
+                    ip = user.get("ip_location") or user.get("province") or ""
+                    city = user.get("city") or ""
+                    if ip and city and city not in ip:
+                        ip = f"{ip} {city}"
+                    if ip.strip():
+                        profile.ip_location = ip.strip()
+                elif post_api in response.url and not profile.latest_aweme_id:
+                    data = await response.json()
+                    aweme_list = data.get("aweme_list") or []
+                    if aweme_list:
+                        profile.latest_aweme_id = str(aweme_list[0].get("aweme_id") or "")
+            except Exception as exc:
+                logger.debug(f"[DM] 解析主页响应失败（忽略）：{exc}")
 
-            # ── 截图诊断（仅首次）──────────────────────────────────────────
-            if not getattr(self, '_dm_screenshot_taken', False):
-                self._dm_screenshot_taken = True
-                try:
-                    await page.screenshot(path="/tmp/dm_profile_before.png")
-                    logger.info("[DM诊断] 截图已保存 /tmp/dm_profile_before.png")
-                    # 打印所有按钮文字
-                    btns = await page.locator("button").all()
-                    btn_texts = []
-                    for b in btns[:15]:
-                        try:
-                            t = (await b.inner_text()).strip()
-                            if t:
-                                btn_texts.append(repr(t))
-                        except Exception:
-                            pass
-                    logger.info(f"[DM诊断] 页面按钮: {btn_texts}")
-                except Exception as e:
-                    logger.debug(f"[DM诊断] 截图失败: {e}")
+        page.on("response", on_profile_response)
+        started = time.monotonic()
+        try:
+            current_url = page.url.split("?", 1)[0].rstrip("/")
+            if current_url != profile_url.split("?", 1)[0].rstrip("/"):
+                logger.info(f"导航到主页：{profile_url}")
+                await page.goto(profile_url, wait_until="domcontentloaded", timeout=30_000)
+            else:
+                logger.debug(f"[DM] 复用已打开的达人主页：{nickname}")
 
             # ── 点击「发私信」按钮 ───────────────────────────────────────────
-            dm_btn = await self._find_dm_button(page)
+            dm_btn = await self._find_dm_button(page, timeout=8.0)
+            if not profile.latest_aweme_id:
+                profile.latest_aweme_id = await first_video_id(page)
+            if profile.ip_location:
+                logger.info(f"[DM] 顺带采集 IP：{nickname} → {profile.ip_location}")
             if dm_btn is None:
                 logger.warning(f"「{nickname}」主页找不到私信按钮，跳过")
                 return False
 
             await dm_btn.click()
-            # 等待私信对话框/弹窗完全加载（需要更长时间）
-            await asyncio.sleep(random.uniform(3.0, 5.0))
-
-            # ── 截图查看弹窗状态 ────────────────────────────────────────────
-            if not getattr(self, '_dm_dialog_screenshot', False):
-                self._dm_dialog_screenshot = True
-                try:
-                    await page.screenshot(path="/tmp/dm_dialog.png")
-                    logger.info("[DM诊断] 点击私信后截图 /tmp/dm_dialog.png")
-                    # 打印 contenteditable 元素
-                    edits = await page.locator('[contenteditable]').all()
-                    for e in edits:
-                        try:
-                            ph = await e.get_attribute("placeholder") or ""
-                            cls = await e.get_attribute("class") or ""
-                            logger.info(f"[DM诊断] contenteditable: placeholder={ph!r} class={cls[:60]}")
-                        except Exception:
-                            pass
-                    textareas = await page.locator("textarea").all()
-                    for t in textareas:
-                        try:
-                            ph = await t.get_attribute("placeholder") or ""
-                            logger.info(f"[DM诊断] textarea: placeholder={ph!r}")
-                        except Exception:
-                            pass
-                except Exception as e:
-                    logger.debug(f"[DM诊断] 对话框截图失败: {e}")
 
             # ── 输入消息 ─────────────────────────────────────────────────────
             input_selectors = [
@@ -275,53 +242,47 @@ class DMService:
                 'div[contenteditable="true"]',
                 'textarea',
             ]
-            input_box = None
-            for sel in input_selectors:
-                try:
-                    el = page.locator(sel).first
-                    if await el.count() > 0:
-                        input_box = el
-                        break
-                except Exception:
-                    continue
+            input_box = await find_first_visible(page, input_selectors, timeout=10.0)
 
             if input_box is None:
                 logger.warning(f"「{nickname}」找不到私信输入框")
                 return False
 
-            await input_box.click()
-            await asyncio.sleep(0.5)
-            # 逐字输入，delay=8ms 快速输入
-            await page.keyboard.type(message, delay=8)
-            await asyncio.sleep(random.uniform(0.3, 0.6))
+            await _fill_input(input_box, message, page)
             # ── 点击发送 ─────────────────────────────────────────────────────
             send_selectors = [
                 'button[data-e2e="chat-send-btn"]',
                 'button:has-text("发送")',
                 '[class*="send-btn"]',
                 '[class*="sendBtn"]',
-                'button[type="submit"]',
             ]
-            sent = False
-            for sel in send_selectors:
-                try:
-                    btn = page.locator(sel).first
-                    if await btn.count() > 0 and await btn.is_enabled():
-                        await btn.click()
-                        sent = True
-                        logger.info(f"[DM] 点击发送按钮：{sel}")
-                        break
-                except Exception:
-                    continue
+            try:
+                async with page.expect_response(
+                    lambda response: "/v1/message/send" in response.url,
+                    timeout=10_000,
+                ) as response_info:
+                    send_btn = await find_first_visible(page, send_selectors, timeout=0.8)
+                    if send_btn is not None and await send_btn.is_enabled():
+                        await send_btn.click()
+                        logger.info("[DM] 点击发送按钮")
+                    else:
+                        await input_box.press("Enter")
+                        logger.info("[DM] 用 Enter 键发送")
 
-            if not sent:
-                # 回退：用 Enter 键发送
-                await input_box.press("Enter")
-                sent = True
-                logger.info("[DM] 用 Enter 键发送")
+                response = await response_info.value
+                if not response.ok:
+                    logger.warning(f"「{nickname}」私信接口返回 HTTP {response.status}")
+                    return False
+            except PWTimeout:
+                # 少数版本的 IM SDK 可能没有把响应暴露给 Page；输入框清空可作为
+                # 已被 SDK 接收的保守兜底，避免误判失败后重复发送。
+                if (await editor_text(input_box)).strip():
+                    logger.warning(f"「{nickname}」未捕获到私信发送响应")
+                    return False
+                logger.warning(f"「{nickname}」发送响应未捕获，但输入框已清空，按成功处理")
 
-            await asyncio.sleep(1.0)
-            return sent
+            logger.info(f"[DM] 单条操作耗时 {time.monotonic() - started:.2f}s")
+            return True
 
         except PWTimeout:
             logger.error(f"「{nickname}」操作超时")
@@ -329,9 +290,11 @@ class DMService:
         except Exception as e:
             logger.error(f"「{nickname}」发送失败：{e}")
             return False
+        finally:
+            page.remove_listener("response", on_profile_response)
 
     @staticmethod
-    async def _find_dm_button(page: Page):
+    async def _find_dm_button(page: Page, timeout: float = 8.0):
         """在用户主页上查找「发私信」按钮，返回 Locator 或 None"""
         selectors = [
             # 数据属性（最可靠）
@@ -351,22 +314,7 @@ class DMService:
             'a:has-text("私信")',
             'span:has-text("私信")',
         ]
-        for sel in selectors:
-            try:
-                el = page.locator(sel).first
-                if await el.count() > 0:
-                    logger.debug(f"[DM] 找到私信按钮：{sel}")
-                    return el
-            except Exception:
-                continue
-
-        # 最后一招：打印所有按钮调试
-        try:
-            btns = await page.locator("button").all()
-            for b in btns:
-                t = (await b.inner_text()).strip()
-                if t:
-                    logger.debug(f"[DM] 可用按钮: {t!r}")
-        except Exception:
-            pass
-        return None
+        result = await find_first_visible(page, selectors, timeout=timeout)
+        if result is not None:
+            logger.debug("[DM] 已找到可见私信按钮")
+        return result

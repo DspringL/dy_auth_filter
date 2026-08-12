@@ -51,6 +51,9 @@ class KOLProfile:
     has_shop: bool = False
     short_id: str = ""
     profile_url: str = ""
+    # 当前任务内缓存的最新作品 ID。私信访问主页时顺带补齐；不入库，仅用于
+    # “私信 + 评论”流程避免评论阶段再次打开达人主页。
+    latest_aweme_id: str = ""
     ip_location: str = ""
     search_keyword: str = ""
     collected_at: str = ""

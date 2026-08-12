@@ -295,8 +295,75 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
                     task_log(f"联系方式：{method}")
 
                     if passed and method in ("dm", "comment", "both"):
+                        if method == "both":
+                            from crawler.services.comment import CommentService
+                            from crawler.services.contact import CombinedContactService
+
+                            dm_svc = DMService(page)
+                            cmt_svc = CommentService(page)
+                            combined_svc = CombinedContactService(dm_svc, cmt_svc)
+                            status_labels = {
+                                "sent": "已发送",
+                                "duplicate": "已联系过，跳过",
+                                "limit": "达到日限额，跳过",
+                                "failed": "失败",
+                            }
+
+                            def on_contact_progress(
+                                index,
+                                total,
+                                profile,
+                                stage,
+                                status,
+                                dm_stats,
+                                comment_stats,
+                            ):
+                                _task_status[task_id]["total_sent"] = dm_stats["sent"]
+                                _task_status[task_id]["total_commented"] = comment_stats["sent"]
+                                stage_name = "私信" if stage == "dm" else "评论"
+                                nickname = profile.nickname or profile.sec_user_id[:12]
+                                task_log(
+                                    f"[{index}/{total}] {nickname} {stage_name}："
+                                    f"{status_labels.get(status, status)}"
+                                )
+
+                            task_log(
+                                f"开始逐位执行私信+评论，共 {len(passed)} 个达人；"
+                                "每位完成两种动作后再处理下一位"
+                            )
+                            combined_result = await combined_svc.send_batch(
+                                passed,
+                                on_progress=on_contact_progress,
+                            )
+                            dm_result = combined_result["dm"]
+                            cmt_result = combined_result["comment"]
+                            sent_count = dm_result["sent"]
+                            comment_count = cmt_result["sent"]
+                            task_log(
+                                f"私信+评论完成：私信发送 {sent_count}、"
+                                f"评论发送 {comment_count}；"
+                                f"私信失败 {dm_result['failed']}、"
+                                f"评论失败 {cmt_result['failed']}"
+                            )
+                            for profile in passed:
+                                if dm_svc._record.already_sent(profile.sec_user_id):
+                                    await update_kol_dm_status(
+                                        db,
+                                        profile.sec_user_id,
+                                        "sent",
+                                        datetime.now(),
+                                    )
+                                if cmt_svc._record.already_commented(profile.sec_user_id):
+                                    await update_kol_comment_status(
+                                        db,
+                                        profile.sec_user_id,
+                                        "sent",
+                                        datetime.now(),
+                                    )
+                            await db.commit()
+
                         # 私信：访问主页点发私信，顺带从 XHR 拦截 IP
-                        if method in ("dm", "both"):
+                        elif method == "dm":
                             from crawler.services.dm import DMService
                             task_log(f"开始发私信，共 {len(passed)} 个达人...")
                             dm_svc = DMService(page)
@@ -314,7 +381,7 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
                             await db.commit()
 
                         # 评论：访问最新作品页发评论（_get_latest_aweme_id 会访问主页，顺带拿IP）
-                        if method in ("comment", "both"):
+                        elif method == "comment":
                             from crawler.services.comment import CommentService
                             task_log(f"开始发评论，共 {len(passed)} 个达人...")
                             cmt_svc = CommentService(page)
@@ -635,10 +702,6 @@ async def send_contact(
 
     manager = await get_browser()
     page = await manager.new_page()
-    try:
-        await page.goto("https://www.douyin.com", wait_until="domcontentloaded", timeout=30_000)
-    except Exception:
-        pass
 
     # 构建 profile 列表
     profiles = []
@@ -653,8 +716,31 @@ async def send_contact(
 
     result = ContactResult()
 
-    # 私信
-    if req.contact_method in ("dm", "both"):
+    if req.contact_method == "both":
+        from crawler.services.contact import CombinedContactService
+
+        dm_svc = DMService(page)
+        cmt_svc = CommentService(page)
+        combined = await CombinedContactService(dm_svc, cmt_svc).send_batch(profiles)
+        dm_result = combined["dm"]
+        comment_result = combined["comment"]
+        result.dm_sent = dm_result["sent"]
+        result.dm_skipped_dup = dm_result["skipped_dup"]
+        result.dm_skipped_limit = dm_result["skipped_limit"]
+        result.dm_failed = dm_result["failed"]
+        result.comment_sent = comment_result["sent"]
+        result.comment_skipped_dup = comment_result["skipped_dup"]
+        result.comment_skipped_limit = comment_result["skipped_limit"]
+        result.comment_failed = comment_result["failed"]
+
+        for uid in req.sec_user_ids:
+            if dm_svc._record.already_sent(uid):
+                await update_kol_dm_status(session, uid, "sent", datetime.now())
+            if cmt_svc._record.already_commented(uid):
+                await update_kol_comment_status(session, uid, "sent", datetime.now())
+
+    # 单独私信
+    elif req.contact_method == "dm":
         dm_svc = DMService(page)
         r = await dm_svc.send_batch(profiles)
         result.dm_sent          = r.get("sent", 0)
@@ -666,8 +752,8 @@ async def send_contact(
             if kol and dm_svc._record.already_sent(uid):
                 await update_kol_dm_status(session, uid, "sent", datetime.now())
 
-    # 评论
-    if req.contact_method in ("comment", "both"):
+    # 单独评论
+    elif req.contact_method == "comment":
         cmt_svc = CommentService(page)
         r = await cmt_svc.send_batch(profiles)
         result.comment_sent          = r.get("sent", 0)
@@ -695,10 +781,6 @@ async def send_dm_legacy(
 
     manager = await get_browser()
     page = await manager.new_page()
-    try:
-        await page.goto("https://www.douyin.com", wait_until="domcontentloaded", timeout=30_000)
-    except Exception:
-        pass
 
     profiles = []
     for uid in req.sec_user_ids:
@@ -713,7 +795,8 @@ async def send_dm_legacy(
     dm_svc = DMService(page)
     result = await dm_svc.send_batch(profiles)
     for uid in req.sec_user_ids:
-        await update_kol_dm_status(session, uid, "sent", datetime.now())
+        if dm_svc._record.already_sent(uid):
+            await update_kol_dm_status(session, uid, "sent", datetime.now())
     await page.close()
     return DMResult(**result)
 
