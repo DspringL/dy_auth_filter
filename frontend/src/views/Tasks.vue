@@ -17,6 +17,7 @@
               <el-form :model="searchForm" :rules="searchRules" ref="searchFormRef" label-width="110px">
                 <el-form-item label="搜索关键词" prop="keywords">
                   <el-select v-model="searchForm.keywords" multiple filterable allow-create
+                    default-first-option
                     placeholder="输入关键词后回车，可多个" style="width:100%" />
                 </el-form-item>
                 <el-divider content-position="left" class="div-sm">筛选条件</el-divider>
@@ -58,6 +59,7 @@
               <el-form :model="videoForm" :rules="searchRules" ref="videoFormRef" label-width="110px">
                 <el-form-item label="搜索关键词" prop="keywords">
                   <el-select v-model="videoForm.keywords" multiple filterable allow-create
+                    default-first-option
                     placeholder="如：美妆教程、好物分享" style="width:100%" />
                 </el-form-item>
                 <el-divider content-position="left" class="div-sm">筛选条件</el-divider>
@@ -327,10 +329,15 @@ import {
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { taskApi, dmApi, userApi } from '@/api/index.js'
+import { useTaskStore } from '@/stores/tasks.js'
 import dayjs from 'dayjs'
 
 // ── Tab 状态 ─────────────────────────────────────────────────────────────────
 const activeTab = ref('search_user')
+
+// ── 任务列表（全局 store，切换菜单不丢失） ────────────────────────────────────
+const taskStore = useTaskStore()
+const tasks = taskStore.tasks
 
 // ── 搜索用户表单 ──────────────────────────────────────────────────────────────
 const searchForm = ref({
@@ -347,7 +354,7 @@ async function submitSearch() {
   try {
     const res = await taskApi.run({ ...searchForm.value, search_type: 'user' })
     res.search_type = 'user'
-    tasks.value.unshift(res)
+    taskStore.addTask(res)
     ElMessage.success(`任务 #${res.task_id} 已启动`)
     pollTask(res.task_id, 'user')
   } finally {
@@ -369,7 +376,7 @@ async function submitVideo() {
   try {
     const res = await taskApi.run({ ...videoForm.value, search_type: 'video' })
     res.search_type = 'video'
-    tasks.value.unshift(res)
+    taskStore.addTask(res)
     ElMessage.success(`任务 #${res.task_id} 已启动`)
     pollTask(res.task_id, 'video')
   } finally {
@@ -552,7 +559,6 @@ async function submitDirect() {
 }
 
 // ── 任务进度 ───────────────────────────────────────────────────────────────────
-const tasks = ref([])
 let pollTimers = {}
 
 function statusType(s) { return { running: 'warning', done: 'success', error: 'danger' }[s] || 'info' }
@@ -566,8 +572,8 @@ function pollTask(taskId, searchType) {
     try {
       const res = await taskApi.status(taskId)
       res.search_type = searchType
-      const idx = tasks.value.findIndex(t => t.task_id === taskId)
-      if (idx >= 0) tasks.value[idx] = res
+      // 用 store 的 updateTask 更新，切换菜单后数据不丢失
+      taskStore.updateTask(taskId, res)
       if (res.status !== 'running') clearInterval(pollTimers[taskId])
     } catch { clearInterval(pollTimers[taskId]) }
   }, 3000)

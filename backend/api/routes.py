@@ -288,9 +288,13 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
 
                     if method in ("comment", "both") and passed:
                         from crawler.services.comment import CommentService
+                        from loguru import logger as _logger
+                        _logger.info(f"[任务{task_id}] 开始评论，共 {len(passed)} 个达人，方法={method}")
                         cmt_svc = CommentService(page)
                         cmt_result = await cmt_svc.send_batch(passed)
                         comment_count = cmt_result.get("sent", 0)
+                        _logger.info(f"[任务{task_id}] 评论完成：{cmt_result}")
+                        _task_status[task_id]["total_commented"] = comment_count
                         for profile in passed:
                             if cmt_svc._record.already_commented(profile.sec_user_id):
                                 await update_kol_comment_status(db, profile.sec_user_id, "sent", datetime.now())

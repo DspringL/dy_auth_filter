@@ -25,14 +25,14 @@ async function initBackend() {
   splashProgress.value = 10
   splashText.value   = '正在启动后端服务...'
 
-  // 进度动画：前 30s 匀速到 85%，之后放慢
+  // 进度动画：前 30s 匀速到 85%，之后放慢（用整数避免浮点小数）
   let tick = 0
   const timer = setInterval(() => {
     tick++
     if (tick < 20 && splashProgress.value < 60) {
-      splashProgress.value += 3        // 前 20 次：快速涨
+      splashProgress.value = Math.min(60, Math.round(splashProgress.value + 3))
     } else if (splashProgress.value < 85) {
-      splashProgress.value += 0.8      // 后续：放慢，留空间给真实就绪
+      splashProgress.value = Math.min(85, Math.round((splashProgress.value + 0.8) * 10) / 10)
     }
     // 动态提示文字
     if (tick === 5)  splashText.value = '后端初始化中，首次启动需要 10-20 秒...'
