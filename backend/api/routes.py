@@ -181,7 +181,16 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
         "started_at": datetime.now().isoformat(),
         "finished_at": None,
         "error_msg": None,
+        "logs": [],  # 详细过程日志
     }
+
+    def task_log(msg: str):
+        """追加任务日志（带时间戳）"""
+        ts = datetime.now().strftime("%H:%M:%S")
+        entry = f"[{ts}] {msg}"
+        _task_status[task_id]["logs"].append(entry)
+        from loguru import logger as _lg
+        _lg.info(f"[任务#{task_id}] {msg}")
 
     async def _run():
         from backend.models.database import AsyncSessionLocal
@@ -207,23 +216,27 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
                     # 加载运行时配置（DB 覆盖 > yaml）
                     from backend.models.config_store import load_config_cache, get_runtime
                     await load_config_cache(db)
+                    task_log(f"任务已创建 DB_ID={real_id}，关键词：{', '.join(req.keywords)}")
 
                     # 检查登录
                     cookie_dict = load_cookies_as_dict()
                     if not any(cookie_dict.get(k, "").strip() for k in LOGIN_COOKIES):
                         raise RuntimeError("未检测到登录 Cookie，请先在管理后台点击「扫码登录」")
+                    task_log("登录状态验证通过")
 
                     # 每个任务创建独立 Page
                     manager = await get_browser()
                     page = await manager.new_page()
+                    task_log("浏览器页面已创建，正在打开抖音...")
                     try:
                         await page.goto(
                             "https://www.douyin.com",
                             wait_until="domcontentloaded",
                             timeout=30_000,
                         )
-                    except Exception:
-                        pass
+                        task_log("抖音主页加载完成")
+                    except Exception as eg:
+                        task_log(f"主页加载警告（忽略）：{eg}")
 
                     # 筛选配置（优先请求参数，其次运行时配置）
                     filter_cfg = FilterConfig(
@@ -232,11 +245,15 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
                         min_total_likes = req.min_total_likes if req.min_total_likes is not None else get_runtime("filter.min_total_likes", 0),
                         require_shop    = req.require_shop    if req.require_shop    is not None else get_runtime("filter.require_shop", False),
                     )
+                    task_log(f"筛选条件：粉丝≥{filter_cfg.min_followers}，点赞≥{filter_cfg.min_total_likes}，橱窗={filter_cfg.require_shop}")
 
                     # 搜索（根据 search_type 选择用户搜索或视频搜索）
                     search_svc = DouyinSearchService(page)
-                    max_per_kw = int(get_runtime("search.max_users_per_keyword",
-                                     int(cfg_get("search.max_users_per_keyword", 50))))
+                    max_per_kw = req.max_per_keyword if req.max_per_keyword else int(get_runtime(
+                        "search.max_users_per_keyword",
+                        int(cfg_get("search.max_users_per_keyword", 50))
+                    ))
+                    task_log(f"开始搜索，类型={search_type}，每关键词最多 {max_per_kw} 条")
 
                     search_type = getattr(req, 'search_type', 'user')
                     if search_type == "video":
@@ -248,15 +265,18 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
                             req.keywords, max_per_keyword=max_per_kw
                         )
                     _task_status[task_id]["total_found"] = len(raw_profiles)
+                    task_log(f"搜索完成，共找到 {len(raw_profiles)} 个候选达人")
 
                     # 筛选
                     kol_filter = KOLFilter(filter_cfg)
                     passed = kol_filter.apply(raw_profiles)
                     passed = kol_filter.sort_by_popularity(passed)
                     _task_status[task_id]["total_passed"] = len(passed)
+                    task_log(f"筛选完成，通过 {len(passed)}/{len(raw_profiles)} 个达人")
 
                     # 补全 IP 属地（访问用户主页拦截 XHR）
                     if passed:
+                        task_log(f"补全 IP 属地（最多 {min(len(passed), 30)} 条）...")
                         from crawler.services.user_detail import batch_fetch_ip_locations
                         ip_map = await batch_fetch_ip_locations(
                             page,
@@ -265,22 +285,27 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
                         )
                         for profile in passed:
                             profile.ip_location = ip_map.get(profile.sec_user_id, "")
+                        task_log(f"IP 属地补全完成，成功 {len([v for v in ip_map.values() if v])} 条")
 
                     # 入库
                     for profile in passed:
                         await upsert_kol(db, profile)
                     await db.commit()
+                    task_log(f"达人数据已入库 {len(passed)} 条")
 
                     # 私信 / 评论
                     sent_count    = 0
                     comment_count = 0
                     method = getattr(req, 'contact_method', 'none')
+                    task_log(f"联系方式：{method}")
 
                     if method in ("dm", "both") and passed:
                         from crawler.services.dm import DMService
+                        task_log(f"开始发私信，共 {len(passed)} 个达人...")
                         dm_svc = DMService(page)
                         dm_result = await dm_svc.send_batch(passed)
                         sent_count = dm_result.get("sent", 0)
+                        task_log(f"私信完成：发送 {sent_count}，跳过重复 {dm_result.get('skipped_dup',0)}，达限 {dm_result.get('skipped_limit',0)}，失败 {dm_result.get('failed',0)}")
                         for profile in passed:
                             if dm_svc._record.already_sent(profile.sec_user_id):
                                 await update_kol_dm_status(db, profile.sec_user_id, "sent", datetime.now())
@@ -288,12 +313,11 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
 
                     if method in ("comment", "both") and passed:
                         from crawler.services.comment import CommentService
-                        from loguru import logger as _logger
-                        _logger.info(f"[任务{task_id}] 开始评论，共 {len(passed)} 个达人，方法={method}")
+                        task_log(f"开始发评论，共 {len(passed)} 个达人...")
                         cmt_svc = CommentService(page)
                         cmt_result = await cmt_svc.send_batch(passed)
                         comment_count = cmt_result.get("sent", 0)
-                        _logger.info(f"[任务{task_id}] 评论完成：{cmt_result}")
+                        task_log(f"评论完成：发送 {comment_count}，跳过重复 {cmt_result.get('skipped_dup',0)}，达限 {cmt_result.get('skipped_limit',0)}，失败 {cmt_result.get('failed',0)}")
                         _task_status[task_id]["total_commented"] = comment_count
                         for profile in passed:
                             if cmt_svc._record.already_commented(profile.sec_user_id):
@@ -304,6 +328,7 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
                     _task_status[task_id]["total_commented"] = comment_count
                     _task_status[task_id]["status"]          = "done"
                     _task_status[task_id]["finished_at"]     = datetime.now().isoformat()
+                    task_log(f"✅ 任务完成：搜索 {len(raw_profiles)}，筛选 {len(passed)}，私信 {sent_count}，评论 {comment_count}")
 
                     await finish_task_log(db, real_id, len(raw_profiles), len(passed), sent_count, "done")
                     await db.commit()
@@ -318,6 +343,7 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
                     _task_status[task_id]["status"] = "error"
                     _task_status[task_id]["error_msg"] = err_msg
                     _task_status[task_id]["finished_at"] = datetime.now().isoformat()
+                    task_log(f"❌ 任务失败：{err_msg}")
                     try:
                         db_id = _task_status[task_id].get("db_id")
                         if db_id:
@@ -345,7 +371,25 @@ async def get_task_status(task_id: int):
         started_at=datetime.fromisoformat(s["started_at"]) if s.get("started_at") else None,
         finished_at=datetime.fromisoformat(s["finished_at"]) if s.get("finished_at") else None,
         error_msg=s.get("error_msg"),
+        logs=s.get("logs", []),
     )
+
+
+@router.delete("/tasks/{task_id}", tags=["任务"])
+async def delete_task(task_id: int):
+    """删除单个任务记录"""
+    if task_id not in _task_status:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    del _task_status[task_id]
+    return {"ok": True, "task_id": task_id}
+
+
+@router.delete("/tasks", tags=["任务"])
+async def delete_all_tasks():
+    """清空所有任务记录"""
+    count = len(_task_status)
+    _task_status.clear()
+    return {"ok": True, "deleted": count}
 
 
 # ── 用户 ID 解析 ──────────────────────────────────────────────────────────────

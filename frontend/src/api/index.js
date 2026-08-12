@@ -41,8 +41,10 @@ export const kolApi = {
 
 // ── 任务 ──────────────────────────────────────────────────────────────────────
 export const taskApi = {
-  run: (data) => http.post('/tasks/run', data),
-  status: (id) => http.get(`/tasks/${id}`),
+  run:       (data)  => http.post('/tasks/run', data),
+  status:    (id)    => http.get(`/tasks/${id}`),
+  delete:    (id)    => http.delete(`/tasks/${id}`),
+  deleteAll: ()      => http.delete('/tasks'),
 }
 
 // ── 私信 & 评论联系 ───────────────────────────────────────────────────────────

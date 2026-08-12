@@ -56,6 +56,8 @@ class TaskCreate(BaseModel):
     max_followers: Optional[int] = None
     min_total_likes: Optional[int] = None
     require_shop: Optional[bool] = None
+    # 每个关键词最多抓取数量（0=使用系统配置）
+    max_per_keyword: Optional[int] = None
     # 联系方式：dm=私信，comment=评论，both=两种都发
     contact_method: Literal["dm", "comment", "both", "none"] = "none"
 
@@ -70,6 +72,7 @@ class TaskStatus(BaseModel):
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     error_msg: Optional[str] = None
+    logs: list[str] = []       # 任务执行过程日志
     model_config = ConfigDict(from_attributes=True)
 
 

@@ -33,6 +33,11 @@
                 <el-form-item label="必须有橱窗">
                   <el-switch v-model="searchForm.require_shop" />
                 </el-form-item>
+                <el-form-item label="每关键词数量">
+                  <el-input-number v-model="searchForm.max_per_keyword" :min="1" :max="200" :step="10"
+                    controls-position="right" style="width:140px" />
+                  <span class="unit-hint">每个关键词最多抓取的达人数</span>
+                </el-form-item>
                 <el-divider content-position="left" class="div-sm">联系方式</el-divider>
                 <el-form-item label="联系方式">
                   <el-radio-group v-model="searchForm.contact_method">
@@ -71,6 +76,11 @@
                 <el-form-item label="总点赞下限">
                   <el-input-number v-model="videoForm.min_total_likes" :min="0" :step="1000"
                     controls-position="right" style="width:140px" />
+                </el-form-item>
+                <el-form-item label="每关键词数量">
+                  <el-input-number v-model="videoForm.max_per_keyword" :min="1" :max="200" :step="10"
+                    controls-position="right" style="width:140px" />
+                  <span class="unit-hint">每个关键词最多抓取的作品作者数</span>
                 </el-form-item>
                 <el-divider content-position="left" class="div-sm">联系方式</el-divider>
                 <el-form-item label="联系方式">
@@ -257,7 +267,15 @@
 
       <!-- 右侧：任务进度 -->
       <el-col :span="13">
-        <el-card shadow="never" header="任务进度">
+        <el-card shadow="never">
+          <template #header>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span>任务进度</span>
+              <el-button v-if="tasks.length" type="danger" size="small" plain @click="deleteAllTasks">
+                清空全部
+              </el-button>
+            </div>
+          </template>
           <div v-if="tasks.length === 0" class="empty">
             <el-empty description="暂无任务记录" :image-size="80" />
           </div>
@@ -276,6 +294,12 @@
                     {{ t.search_type === 'video' ? '搜索作品' : '搜索用户' }}
                   </el-tag>
                   <span class="task-id">任务 #{{ t.task_id }}</span>
+                  <el-button
+                    v-if="t.status !== 'running'"
+                    size="small" text type="danger"
+                    style="margin-left:auto"
+                    @click="deleteTask(t.task_id)"
+                  >删除</el-button>
                 </div>
                 <el-row :gutter="8" class="task-stats mt-2">
                   <el-col :span="6">
@@ -312,6 +336,16 @@
                   v-if="t.error_msg" :title="t.error_msg"
                   type="error" :closable="false" show-icon class="mt-2" size="small"
                 />
+                <!-- 执行日志 -->
+                <el-collapse v-if="t.logs && t.logs.length" class="mt-2">
+                  <el-collapse-item :title="`执行日志（${t.logs.length} 条）`" :name="t.task_id">
+                    <el-scrollbar max-height="200px">
+                      <div v-for="(line, i) in t.logs" :key="i" class="log-line">
+                        {{ line }}
+                      </div>
+                    </el-scrollbar>
+                  </el-collapse-item>
+                </el-collapse>
               </el-card>
             </el-timeline-item>
           </el-timeline>
@@ -342,7 +376,7 @@ const tasks = taskStore.tasks
 // ── 搜索用户表单 ──────────────────────────────────────────────────────────────
 const searchForm = ref({
   keywords: [], min_followers: 10000, min_total_likes: 10000,
-  require_shop: false, contact_method: 'none',
+  require_shop: false, contact_method: 'none', max_per_keyword: 50,
 })
 const searchRules = { keywords: [{ required: true, message: '请至少输入一个关键词', trigger: 'change' }] }
 const searchFormRef   = ref(null)
@@ -365,7 +399,7 @@ async function submitSearch() {
 // ── 搜索作品表单 ──────────────────────────────────────────────────────────────
 const videoForm = ref({
   keywords: [], min_followers: 10000, min_total_likes: 10000,
-  require_shop: false, contact_method: 'none',
+  require_shop: false, contact_method: 'none', max_per_keyword: 50,
 })
 const videoFormRef    = ref(null)
 const videoSubmitting = ref(false)
@@ -579,12 +613,42 @@ function pollTask(taskId, searchType) {
   }, 3000)
 }
 
+async function deleteTask(taskId) {
+  try {
+    await taskApi.delete(taskId)
+    taskStore.tasks.splice(taskStore.tasks.findIndex(t => t.task_id === taskId), 1)
+  } catch (e) {
+    ElMessage.error('删除失败')
+  }
+}
+
+async function deleteAllTasks() {
+  try {
+    await taskApi.deleteAll()
+    taskStore.clearTasks()
+    ElMessage.success('已清空所有任务')
+  } catch (e) {
+    ElMessage.error('清空失败')
+  }
+}
+
 onMounted(() => {})
 onUnmounted(() => Object.values(pollTimers).forEach(clearInterval))
 </script>
 
 <style scoped>
 .tasks-page {}
+.log-line {
+  font-family: monospace;
+  font-size: 12px;
+  color: #595959;
+  line-height: 1.6;
+  padding: 1px 4px;
+  border-bottom: 1px solid #f0f0f0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.log-line:last-child { border-bottom: none; }
 .page-title { font-size: 20px; font-weight: 600; margin-bottom: 16px; color: #1a1a1a; }
 .form-card { border-radius: 8px; }
 .main-tabs { margin-bottom: 0; }
