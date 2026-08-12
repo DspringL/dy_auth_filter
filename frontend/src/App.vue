@@ -5,7 +5,7 @@
     :progress="splashProgress"
     :status-text="splashText"
     :error="splashError"
-    @retry="initBackend"
+    @retry="initBackend(true)"
   />
   <router-view v-else />
 </template>
@@ -13,17 +13,27 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import SplashScreen from '@/components/SplashScreen.vue'
-import { isTauri, waitForBackend } from '@/tauri.js'
+import { isTauri, restartBackend, waitForBackend } from '@/tauri.js'
 
 const showSplash   = ref(false)
 const splashProgress = ref(0)
 const splashText   = ref('正在初始化...')
 const splashError  = ref(false)
 
-async function initBackend() {
+async function initBackend(shouldRestart = false) {
   splashError.value  = false
   splashProgress.value = 10
   splashText.value   = '正在启动后端服务...'
+
+  if (shouldRestart) {
+    try {
+      await restartBackend()
+    } catch (error) {
+      splashError.value = true
+      splashText.value = String(error)
+      return
+    }
+  }
 
   // 进度动画：前 30s 匀速到 85%，之后放慢（用整数避免浮点小数）
   let tick = 0
@@ -40,17 +50,18 @@ async function initBackend() {
     if (tick === 30) splashText.value = '快好了，再等一会儿...'
   }, 600)
 
-  const ready = await waitForBackend(90)
+  const result = await waitForBackend(90)
   clearInterval(timer)
 
-  if (ready) {
+  if (result.ready) {
     splashProgress.value = 100
     splashText.value = '启动成功，正在加载界面...'
     await new Promise(r => setTimeout(r, 500))
     showSplash.value = false
   } else {
     splashError.value = true
-    splashText.value = '后端启动超时（90s），请点击重试'
+    const logHint = result.logPath ? `\n启动日志：${result.logPath}` : ''
+    splashText.value = `${result.error || '后端启动失败'}，请点击重试${logHint}`
   }
 }
 

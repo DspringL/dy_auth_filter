@@ -1,6 +1,6 @@
 [package]
 name = "dy-auth-filter"
-version = "1.0.0"
+version = "1.0.18"
 description = "抖音达人联络官"
 authors = ["admin"]
 edition = "2021"

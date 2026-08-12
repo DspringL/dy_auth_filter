@@ -95,6 +95,9 @@ defineEmits(['retry'])
 .status-text {
   color: rgba(255,255,255,.7);
   font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
 }
 .status-text.error {
   color: #ff7875;

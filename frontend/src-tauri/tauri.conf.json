@@ -1,6 +1,6 @@
 {
   "productName": "DouyinKOL",
-  "version": "1.0.0",
+  "version": "1.0.18",
   "identifier": "com.dyauth.filter",
   "build": {
     "frontendDist": "../dist",

@@ -4,7 +4,7 @@
  * 三重保险：
  * 1. 监听 Rust emit 的 'backend-ready' 事件（Rust 轮询 HTTP 200 后触发）
  * 2. 前端 fetch 轮询 http://127.0.0.1:8000/（CSP=null 无限制）
- * 3. invoke('check_backend') 确认进程存在
+ * 3. invoke('get_backend_status') 确认进程存在并获取启动错误
  *
  * 只要任意一种方式确认后端就绪，立即进入主界面。
  */
@@ -15,35 +15,48 @@ export const isTauri = () =>
 /**
  * 等待后端就绪
  * @param {number} maxWait 最大等待秒数（sidecar 首次启动约 8-15s）
- * @returns {Promise<boolean>}
+ * @returns {Promise<{ready: boolean, error: string|null, logPath: string}>}
  */
 export async function waitForBackend(maxWait = 90) {
-  if (!isTauri()) return true
+  if (!isTauri()) return { ready: true, error: null, logPath: '' }
 
   return new Promise(async (resolve) => {
     let resolved = false
-    let unlisten = null
+    let logPath = ''
+    const unlisteners = []
 
-    const done = (val, from) => {
+    const done = (ready, from, error = null) => {
       if (resolved) return
       resolved = true
-      console.log(`[tauri] 后端就绪，来源: ${from}`)
-      try { if (unlisten) unlisten() } catch {}
-      resolve(val)
+      console.log(`[tauri] 后端${ready ? '就绪' : '启动失败'}，来源: ${from}`)
+      for (const unlisten of unlisteners) {
+        try { unlisten() } catch {}
+      }
+      resolve({ ready, error, logPath })
     }
 
     // 超时兜底
-    const timeoutId = setTimeout(() => done(false, 'timeout'), maxWait * 1000)
+    const timeoutId = setTimeout(
+      () => done(false, 'timeout', `后端启动超时（${maxWait} 秒）`),
+      maxWait * 1000,
+    )
 
     // ── 方案1：监听 Rust emit 的 backend-ready 事件 ────────────────────────
     try {
       const { listen } = await import('@tauri-apps/api/event')
-      unlisten = await listen('backend-ready', () => {
+      const unlistenReady = await listen('backend-ready', () => {
         clearTimeout(timeoutId)
         done(true, 'backend-ready event')
       })
+      unlisteners.push(unlistenReady)
+
+      const unlistenFailed = await listen('backend-failed', (event) => {
+        clearTimeout(timeoutId)
+        done(false, 'backend-failed event', String(event.payload || '后端进程异常退出'))
+      })
+      unlisteners.push(unlistenFailed)
     } catch (e) {
-      console.warn('[tauri] 无法监听 backend-ready:', e)
+      console.warn('[tauri] 无法监听后端事件:', e)
     }
 
     // ── 方案2：fetch 轮询 http://127.0.0.1:8000/ ──────────────────────────
@@ -92,18 +105,21 @@ export async function waitForBackend(maxWait = 90) {
       flushLog()
     })()
 
-    // ── 方案3：invoke check_backend + 延迟确认 ────────────────────────────
-    // 作为补充：进程已启动后再等 8 秒（sidecar 启动时间）
+    // ── 方案3：检查进程是否存活，并尽早显示 Rust 启动错误 ─────────────────
     ;(async () => {
       let processDetected = false
       while (!resolved) {
         try {
           const { invoke } = await import('@tauri-apps/api/core')
-          const ok = await invoke('check_backend')
-          if (ok && !processDetected) {
+          const status = await invoke('get_backend_status')
+          logPath = status.logPath || logPath
+          if (status.running && !processDetected) {
             processDetected = true
             console.log('[tauri] 后端进程已启动，等待 HTTP 就绪...')
-            // 不立即 resolve，继续等 fetch 轮询确认
+          } else if (!status.running && status.error) {
+            clearTimeout(timeoutId)
+            done(false, 'backend status', status.error)
+            return
           }
         } catch {
           // invoke 还没准备好
@@ -112,4 +128,11 @@ export async function waitForBackend(maxWait = 90) {
       }
     })()
   })
+}
+
+/** 终止旧进程并重新启动后端。 */
+export async function restartBackend() {
+  if (!isTauri()) return
+  const { invoke } = await import('@tauri-apps/api/core')
+  await invoke('restart_backend')
 }

@@ -1,6 +1,6 @@
 {
   "name": "douyin-kol-admin",
-  "version": "1.0.0",
+  "version": "1.0.18",
   "description": "抖音带货达人管理后台",
   "scripts": {
     "dev": "vite --port 5173",
