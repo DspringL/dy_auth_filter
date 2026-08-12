@@ -25,22 +25,32 @@ async function initBackend() {
   splashProgress.value = 10
   splashText.value   = '正在启动后端服务...'
 
-  // 模拟进度：在等待过程中匀速增长到 90%
+  // 进度动画：前 30s 匀速到 85%，之后放慢
+  let tick = 0
   const timer = setInterval(() => {
-    if (splashProgress.value < 88) splashProgress.value += 3
+    tick++
+    if (tick < 20 && splashProgress.value < 60) {
+      splashProgress.value += 3        // 前 20 次：快速涨
+    } else if (splashProgress.value < 85) {
+      splashProgress.value += 0.8      // 后续：放慢，留空间给真实就绪
+    }
+    // 动态提示文字
+    if (tick === 5)  splashText.value = '后端初始化中，首次启动需要 10-20 秒...'
+    if (tick === 15) splashText.value = '正在加载依赖模块，请稍候...'
+    if (tick === 30) splashText.value = '快好了，再等一会儿...'
   }, 600)
 
-  const ready = await waitForBackend(60)
+  const ready = await waitForBackend(90)
   clearInterval(timer)
 
   if (ready) {
     splashProgress.value = 100
     splashText.value = '启动成功，正在加载界面...'
-    await new Promise(r => setTimeout(r, 600))
+    await new Promise(r => setTimeout(r, 500))
     showSplash.value = false
   } else {
     splashError.value = true
-    splashText.value = '后端启动超时，请检查 Python 环境或重试'
+    splashText.value = '后端启动超时（90s），请点击重试'
   }
 }
 
