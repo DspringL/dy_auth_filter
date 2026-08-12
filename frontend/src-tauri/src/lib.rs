@@ -34,37 +34,52 @@ fn append_log(path: &str, msg: &str) -> std::io::Result<()> {
 /// 优先使用打包的 sidecar 可执行文件，开发模式下退回 uvicorn
 fn start_backend(app: &AppHandle) -> std::io::Result<Child> {
     let resource_path = app.path().resource_dir().unwrap_or_default();
-    let sidecar_path = resource_path.join("binaries").join(get_sidecar_name());
 
-    // ── 启动日志 ──────────────────────────────────────────────────────────
+    // Tauri 打包后 sidecar 与主程序同目录（Contents/MacOS/backend-server）
+    let exe_dir = std::env::current_exe()
+        .unwrap_or_default()
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .to_path_buf();
+
+    // 候选 sidecar 路径（按优先级）
+    let candidates = vec![
+        exe_dir.join("backend-server"),                              // 打包版：Contents/MacOS/
+        resource_path.join("binaries").join(get_sidecar_name()),    // 旧路径
+        resource_path.join("binaries").join("backend-server"),      // 无 triple
+    ];
+
     let log_path = "/tmp/douyinkol_startup.log";
-    let _ = std::fs::write(
-        log_path,
-        format!(
-            "[{ts}] === 应用启动 ===\n\
-             [{ts}] resource_dir: {res}\n\
-             [{ts}] sidecar_path: {sc}\n\
-             [{ts}] sidecar_exists: {ex}\n",
-            ts = chrono_now(),
-            res = resource_path.display(),
-            sc = sidecar_path.display(),
-            ex = sidecar_path.exists(),
-        ),
-    );
+    let _ = std::fs::write(log_path, format!(
+        "[{ts}] === 应用启动 ===\n\
+         [{ts}] exe_dir:      {exe}\n\
+         [{ts}] resource_dir: {res}\n",
+        ts  = chrono_now(),
+        exe = exe_dir.display(),
+        res = resource_path.display(),
+    ));
 
-    if sidecar_path.exists() {
-        // 生产模式：运行打包的可执行文件
-        // DYAUTH_RESOURCE_DIR 指向 app 数据目录，确保数据库和配置写到正确位置
+    let mut cands_log = String::new();
+    for c in &candidates {
+        cands_log.push_str(&format!("  {} exists={}\n", c.display(), c.exists()));
+    }
+    let _ = append_log(log_path, &format!(
+        "[{}] sidecar 候选:\n{}", chrono_now(), cands_log
+    ));
+
+    let sidecar_path = candidates.into_iter().find(|p| p.exists());
+
+    if let Some(path) = sidecar_path {
         let data_dir = app.path()
             .app_data_dir()
             .unwrap_or(resource_path.clone());
 
         let _ = append_log(log_path, &format!(
-            "[{}] 模式: sidecar\n[{}] data_dir: {}\n",
-            chrono_now(), chrono_now(), data_dir.display()
+            "[{}] 模式: sidecar\n[{}] sidecar: {}\n[{}] data_dir: {}\n",
+            chrono_now(), chrono_now(), path.display(), chrono_now(), data_dir.display()
         ));
 
-        Command::new(sidecar_path)
+        Command::new(&path)
             .env("DYAUTH_RESOURCE_DIR", data_dir.to_str().unwrap_or("."))
             .spawn()
     } else {
