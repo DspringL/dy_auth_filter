@@ -58,14 +58,22 @@ class BrowserManager:
         return self
 
     async def new_page(self):
-        """创建新标签页"""
+        """创建新标签页，自动处理 context 失效情况"""
         if self._context is None:
             raise RuntimeError("BrowserManager 未启动，请先调用 start()")
-        page = await self._context.new_page()
-        # 设置默认超时
-        page.set_default_timeout(30_000)
-        page.set_default_navigation_timeout(60_000)
-        return page
+        try:
+            page = await self._context.new_page()
+            page.set_default_timeout(30_000)
+            page.set_default_navigation_timeout(60_000)
+            return page
+        except Exception as e:
+            logger.warning(f"new_page 失败（context 可能已关闭），尝试重启浏览器：{e}")
+            await self.close()
+            await self.start()
+            page = await self._context.new_page()
+            page.set_default_timeout(30_000)
+            page.set_default_navigation_timeout(60_000)
+            return page
 
     async def get_cookies(self) -> list[dict]:
         """获取当前 Context 下的所有 Cookie"""
@@ -107,11 +115,26 @@ _manager: BrowserManager | None = None
 
 
 async def get_browser() -> BrowserManager:
-    """获取全局 BrowserManager 单例"""
+    """获取全局 BrowserManager 单例，自动检测 context 是否存活"""
     global _manager
     if _manager is None or _manager._context is None:
         _manager = BrowserManager()
         await _manager.start()
+        return _manager
+
+    # 检测 context 是否仍然存活（通过 new_page 测试）
+    try:
+        # 用 context.pages 属性探测是否已关闭（Playwright 关闭的 context 访问属性会抛异常）
+        _ = _manager._context.pages
+    except Exception:
+        logger.warning("BrowserManager context 已失效，重新启动...")
+        try:
+            await _manager.close()
+        except Exception:
+            pass
+        _manager = BrowserManager()
+        await _manager.start()
+
     return _manager
 
 

@@ -344,6 +344,12 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
                     _task_status[task_id]["error_msg"] = err_msg
                     _task_status[task_id]["finished_at"] = datetime.now().isoformat()
                     task_log(f"❌ 任务失败：{err_msg}")
+                    # 任务失败时重置浏览器实例，避免下次任务继承坏的 context
+                    try:
+                        from crawler.core.browser import close_browser
+                        await close_browser()
+                    except Exception:
+                        pass
                     try:
                         db_id = _task_status[task_id].get("db_id")
                         if db_id:
