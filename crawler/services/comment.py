@@ -260,78 +260,83 @@ class CommentService:
         )
         logger.info(f"[评论] 准备发送（{len(comment_text)} 字）：{comment_text[:50]}...")
 
-        # Step 4：激活 Draft.js 评论输入框
-        # js-reverse 确认：输入框是 div.notranslate.public-DraftEditor-content
-        # 激活方式：点击页面底部评论栏区域（坐标 y 约在 viewport_height - 112）
-        activated = False
+        # Step 4：找到评论输入框并点击激活
+        # 截图确认：视频详情页底部评论输入框是 input[placeholder*="留下你的精彩评论吧"]
+        # 点击后页面滚动，输入框移到顶部（y≈85），但焦点已在输入框上
+        input_sel = None
+        input_el = None
 
-        # 方式1：精确 CSS 选择器
         for sel in [
-            'div.notranslate.public-DraftEditor-content',
-            '[class*="public-DraftEditor-content"]',
+            'input[placeholder*="留下你的精彩评论吧"]',
+            'input[placeholder*="友善评论"]',
+            'input[placeholder*="评论"]',
+            'input[placeholder*="说点什么"]',
             '[data-e2e="comment-input"]',
-            'div[contenteditable="true"][class*="DraftEditor"]',
-            'div[contenteditable="true"][class*="comment"]',
+            # 评论区列表底部的输入框
+            '[class*="commentInput"] input',
+            '[class*="comment-input"] input',
+            '[class*="DraftEditor-content"]',
         ]:
             try:
                 el = page.locator(sel).first
                 if await el.count() > 0:
-                    await el.click()
-                    logger.info(f"[评论] 点击输入框：{sel}")
-                    activated = True
-                    await asyncio.sleep(0.8)
+                    input_sel = sel
+                    input_el = el
                     break
             except Exception:
                 pass
 
-        # 方式2：坐标点击（js-reverse 实测有效：底部评论栏 y ≈ viewport_height - 112）
-        if not activated:
-            try:
-                vp = page.viewport_size or {"width": 1280, "height": 900}
-                click_x = vp["width"] // 2
-                click_y = vp["height"] - 112
-                await page.mouse.click(click_x, click_y)
-                logger.info(f"[评论] 坐标点击激活输入框：({click_x}, {click_y})")
-                activated = True
-                await asyncio.sleep(1.0)
-            except Exception as e:
-                logger.warning(f"[评论] 坐标点击失败：{e}")
-
-        if not activated:
-            logger.warning(f"「{nickname}」无法激活评论输入框")
+        if input_el is None:
+            logger.warning(f"「{nickname}」未找到评论输入框")
             return aweme_id, False
 
-        # Step 5：确认 focused 元素是 DraftEditor，再逐字输入
-        focused = await page.evaluate(
-            "() => document.activeElement ? document.activeElement.className : ''"
+        logger.info(f"[评论] 找到输入框：{input_sel}")
+
+        # 点击输入框（会触发页面滚动，输入框移到顶部，焦点正确）
+        await input_el.click()
+        await asyncio.sleep(1.0)
+
+        # 确认焦点已在输入框
+        focused_tag = await page.evaluate(
+            "() => document.activeElement ? document.activeElement.tagName + '|' + (document.activeElement.placeholder||'') : 'none'"
         )
-        logger.info(f"[评论] 当前 focused 元素 class: {focused[:60]}")
+        logger.info(f"[评论] focused: {focused_tag}")
 
-        # 如果 focused 不是评论框，再尝试用坐标点击
-        if "DraftEditor" not in focused and "comment" not in focused.lower():
-            vp = page.viewport_size or {"width": 1280, "height": 900}
-            await page.mouse.click(vp["width"] // 2, vp["height"] - 112)
-            await asyncio.sleep(0.8)
-            focused = await page.evaluate(
-                "() => document.activeElement ? document.activeElement.className : ''"
-            )
-            logger.info(f"[评论] 重新 focused: {focused[:60]}")
-
-        # Step 6：逐字输入（delay=8ms，快速但仍触发 React onChange）
-        try:
+        # Step 5：直接用 fill 填充（input 元素支持 fill）
+        tag = await input_el.evaluate("el => el.tagName.toLowerCase()")
+        if tag in ("input", "textarea"):
+            await input_el.fill(comment_text)
+        else:
+            # contenteditable：逐字输入
             await page.keyboard.type(comment_text, delay=8)
-            await asyncio.sleep(random.uniform(0.3, 0.6))
-            logger.info(f"[评论] 输入完成")
-        except Exception as e:
-            logger.warning(f"「{nickname}」输入评论失败：{e}")
-            return aweme_id, False
+        await asyncio.sleep(random.uniform(0.3, 0.6))
+        logger.info(f"[评论] 输入完成")
 
-        # Step 7：按 Enter 发送（js-reverse 实测：Enter 触发 POST comment/publish）
-        try:
-            await page.keyboard.press("Enter")
+        # Step 6：点击发送按钮（截图确认：输入后右侧出现「发布」按钮）
+        sent = False
+        for sel in [
+            'button[data-e2e="comment-submit"]',
+            'button:has-text("发布")',
+            'button:has-text("发送")',
+            '[class*="submit"]',
+            '[class*="btn-send"]',
+        ]:
+            try:
+                btn = page.locator(sel).first
+                if await btn.count() > 0 and await btn.is_visible() and await btn.is_enabled():
+                    await btn.click()
+                    sent = True
+                    logger.info(f"[评论] 点击发送按钮：{sel}")
+                    await asyncio.sleep(1.5)
+                    break
+            except Exception:
+                pass
+
+        if not sent:
+            # 回退：Enter 键
+            await input_el.press("Enter")
             await asyncio.sleep(1.5)
-            logger.info(f"[评论] Enter 键发送成功")
-            return aweme_id, True
-        except Exception as e:
-            logger.warning(f"「{nickname}」发送评论失败：{e}")
-            return aweme_id, False
+            logger.info("[评论] Enter 键发送")
+            sent = True
+
+        return aweme_id, sent
