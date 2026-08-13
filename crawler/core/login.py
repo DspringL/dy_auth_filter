@@ -50,21 +50,33 @@ async def check_login(manager: BrowserManager) -> bool:
     return False
 
 
-async def _poll_login_cookies(manager: BrowserManager, timeout: int = QRCODE_TIMEOUT) -> bool:
+async def _poll_login_cookies(
+    manager: BrowserManager,
+    timeout: int = QRCODE_TIMEOUT,
+    ensure_login_page=None,
+) -> bool:
     """
     在指定超时时间内轮询 Cookie，检测到登录态立即返回 True。
-    不操作页面，只检测 Cookie。
+    浏览器或二维码标签页被关闭时，可通过 ensure_login_page 恢复扫码页。
     """
     deadline = time.time() + timeout
     while time.time() < deadline:
-        await asyncio.sleep(2)
         cookies = await manager.get_cookies()
         cookie_map = {c["name"]: c["value"] for c in cookies}
         if any(cookie_map.get(k, "").strip() for k in LOGIN_COOKIES):
             return True
+
+        if ensure_login_page is not None:
+            try:
+                await ensure_login_page()
+            except Exception as exc:
+                # BrowserManager 的看门狗仍会继续恢复进程；下一轮再尝试重建扫码页。
+                logger.warning(f"恢复扫码登录页面失败，将继续重试：{exc}")
+
         remaining = int(deadline - time.time())
         if remaining % 10 == 0 and remaining > 0:
             logger.debug(f"等待扫码登录...剩余 {remaining}s")
+        await asyncio.sleep(min(2, max(0, deadline - time.time())))
     return False
 
 
@@ -143,9 +155,26 @@ async def do_qrcode_login(manager: BrowserManager) -> bool:
     不做任何页面跳转（避免 ERR_CONNECTION_CLOSED）。
     """
     logger.info("开始二维码登录流程...")
-    page = await manager.new_page()
+    page = None
+    page_generation = -1
 
-    try:
+    async def _close_login_page():
+        nonlocal page
+        if page is not None:
+            try:
+                if not page.is_closed():
+                    await page.close()
+            except Exception:
+                pass
+        page = None
+
+    async def _show_login_page() -> bool:
+        """创建并展示扫码页；若 Profile 已登录则返回 True。"""
+        nonlocal page, page_generation
+        await _close_login_page()
+        page = await manager.new_page()
+        page_generation = manager.generation
+
         # ── 第一步：打开抖音首页 ──────────────────────────────────────────
         logger.info(f"打开抖音首页：{DOUYIN_HOME}")
         try:
@@ -166,8 +195,6 @@ async def do_qrcode_login(manager: BrowserManager) -> bool:
         # ── 第二步：检测是否已登录（可能 Profile 已有 Cookie） ────────────
         if await check_login(manager):
             logger.info("打开首页后检测到已登录 Cookie，无需扫码")
-            await _save_cookies(manager)
-            await page.close()
             return True
 
         # ── 第三步：触发登录弹窗 ──────────────────────────────────────────
@@ -175,6 +202,26 @@ async def do_qrcode_login(manager: BrowserManager) -> bool:
 
         # ── 第四步：尝试切换到二维码 ──────────────────────────────────────
         await _ensure_qrcode_visible(page)
+        return False
+
+    async def _ensure_login_page():
+        """扫码等待期间发现页面或整个浏览器被关闭时，重新展示二维码。"""
+        page_lost = page is None
+        if not page_lost:
+            try:
+                page_lost = page.is_closed()
+            except Exception:
+                page_lost = True
+        browser_restarted = page_generation != manager.generation
+        if page_lost or browser_restarted:
+            logger.warning("扫码页面已关闭或浏览器已重启，正在重新打开二维码...")
+            await _show_login_page()
+
+    try:
+        if await _show_login_page():
+            await _save_cookies(manager)
+            await _close_login_page()
+            return True
 
         # ── 第五步：提示用户扫码 ──────────────────────────────────────────
         logger.info(f"等待扫码登录（最长 {QRCODE_TIMEOUT} 秒）...")
@@ -184,24 +231,25 @@ async def do_qrcode_login(manager: BrowserManager) -> bool:
         print("=" * 60 + "\n")
 
         # ── 第六步：轮询 Cookie，等待登录成功 ────────────────────────────
-        logged_in = await _poll_login_cookies(manager, timeout=QRCODE_TIMEOUT)
+        logged_in = await _poll_login_cookies(
+            manager,
+            timeout=QRCODE_TIMEOUT,
+            ensure_login_page=_ensure_login_page,
+        )
 
         if logged_in:
             logger.info("扫码登录成功！")
             await _save_cookies(manager)
-            await page.close()
+            await _close_login_page()
             return True
         else:
             logger.error(f"扫码登录超时（{QRCODE_TIMEOUT} 秒内未检测到登录 Cookie）")
-            await page.close()
+            await _close_login_page()
             return False
 
     except Exception as e:
         logger.error(f"二维码登录流程异常：{e}")
-        try:
-            await page.close()
-        except Exception:
-            pass
+        await _close_login_page()
         return False
 
 

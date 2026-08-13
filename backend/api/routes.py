@@ -419,10 +419,11 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
                     _task_status[task_id]["error_msg"] = err_msg
                     _task_status[task_id]["finished_at"] = datetime.now().isoformat()
                     task_log(f"❌ 任务失败：{err_msg}")
-                    # 任务失败时重置浏览器实例，避免下次任务继承坏的 context
+                    # 任务失败时确保浏览器进程仍在；看门狗会恢复被手动关闭或
+                    # 崩溃的 Context，且不会像 close_browser 那样停止守护。
                     try:
-                        from crawler.core.browser import close_browser
-                        await close_browser()
+                        from crawler.core.browser import get_browser
+                        await get_browser()
                     except Exception:
                         pass
                     try:

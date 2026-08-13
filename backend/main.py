@@ -12,12 +12,23 @@ from backend.api.routes import router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用启动时初始化数据库"""
+    """应用启动时初始化数据库和浏览器，退出时释放浏览器进程。"""
     logger.info("后端服务启动中...")
     await init_db()
+    from crawler.core.browser import get_browser
+    try:
+        await get_browser()
+        logger.info("浏览器进程已就绪，自动恢复看门狗已启动")
+    except Exception as exc:
+        # 浏览器看门狗已经启动，会继续重试；API 保持可用以便前端展示状态。
+        logger.error(f"浏览器首次启动失败，将在后台自动重试：{exc}")
     logger.info("后端服务已就绪")
-    yield
-    logger.info("后端服务关闭")
+    try:
+        yield
+    finally:
+        from crawler.core.browser import close_browser
+        await close_browser()
+        logger.info("后端服务关闭")
 
 
 app = FastAPI(

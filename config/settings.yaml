@@ -14,6 +14,10 @@ cloak_browser:
   cdp_port: 9222
   # 启动超时秒数
   launch_timeout: 30
+  # 浏览器进程存活检查间隔；手动关闭时 close 事件会立即触发恢复
+  health_check_interval: 3
+  # 浏览器启动失败后的重试间隔
+  restart_retry_interval: 3
 
 # 抖音配置
 douyin:
