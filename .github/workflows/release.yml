@@ -151,7 +151,7 @@ jobs:
       (github.event_name == 'push' ||
        inputs.platform == 'all' ||
        inputs.platform == 'macos-intel')
-    runs-on: macos-13   # macos-13 是 GitHub 最后一个 x86_64 Intel runner，macos-latest 已是 ARM
+    runs-on: macos-15-intel  # Intel x86_64 runner（macos-13 资源池已萎缩，官方推荐 macos-15-intel）
     permissions:
       contents: write
     steps:
