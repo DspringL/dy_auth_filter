@@ -426,8 +426,8 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
                             from crawler.services.comment import CommentService
                             from crawler.services.contact import CombinedContactService
 
-                            dm_svc = DMService(page, captcha_event_handler=on_captcha_event)
-                            cmt_svc = CommentService(page, captcha_event_handler=on_captcha_event)
+                            dm_svc = DMService(page, captcha_event_handler=on_captcha_event, task_log=task_log)
+                            cmt_svc = CommentService(page, captcha_event_handler=on_captcha_event, task_log=task_log)
                             combined_svc = CombinedContactService(dm_svc, cmt_svc)
                             status_labels = {
                                 "sent": "已发送",
@@ -493,7 +493,7 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
                         elif method == "dm":
                             from crawler.services.dm import DMService
                             task_log(f"开始发私信，共 {len(passed)} 个达人...")
-                            dm_svc = DMService(page, captcha_event_handler=on_captcha_event)
+                            dm_svc = DMService(page, captcha_event_handler=on_captcha_event, task_log=task_log)
                             dm_result = await dm_svc.send_batch(passed)
                             sent_count = dm_result.get("sent", 0)
                             task_log(
@@ -511,7 +511,7 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
                         elif method == "comment":
                             from crawler.services.comment import CommentService
                             task_log(f"开始发评论，共 {len(passed)} 个达人...")
-                            cmt_svc = CommentService(page, captcha_event_handler=on_captcha_event)
+                            cmt_svc = CommentService(page, captcha_event_handler=on_captcha_event, task_log=task_log)
                             cmt_result = await cmt_svc.send_batch(passed)
                             comment_count = cmt_result.get("sent", 0)
                             task_log(
@@ -906,8 +906,8 @@ async def send_contact(
     if req.contact_method == "both":
         from crawler.services.contact import CombinedContactService
 
-        dm_svc = DMService(page)
-        cmt_svc = CommentService(page)
+        dm_svc = DMService(page, task_log=lambda msg: None)
+        cmt_svc = CommentService(page, task_log=lambda msg: None)
         combined = await CombinedContactService(dm_svc, cmt_svc).send_batch(profiles)
         dm_result = combined["dm"]
         comment_result = combined["comment"]
@@ -928,7 +928,7 @@ async def send_contact(
 
     # 单独私信
     elif req.contact_method == "dm":
-        dm_svc = DMService(page)
+        dm_svc = DMService(page, task_log=lambda msg: None)
         r = await dm_svc.send_batch(profiles)
         result.dm_sent          = r.get("sent", 0)
         result.dm_skipped_dup   = r.get("skipped_dup", 0)
@@ -941,7 +941,7 @@ async def send_contact(
 
     # 单独评论
     elif req.contact_method == "comment":
-        cmt_svc = CommentService(page)
+        cmt_svc = CommentService(page, task_log=lambda msg: None)
         r = await cmt_svc.send_batch(profiles)
         result.comment_sent          = r.get("sent", 0)
         result.comment_skipped_dup   = r.get("skipped_dup", 0)

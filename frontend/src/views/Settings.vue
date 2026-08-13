@@ -51,12 +51,13 @@
               <el-input
                 v-model="form['dm.template']"
                 type="textarea"
-                :rows="3"
-                placeholder="请写成一行，不要换行——抖音限制对方回复前只能发一条消息"
+                :rows="5"
+                placeholder="可输入多行，每行一条模板，每次随机取一条发送&#10;示例：&#10;你好 {nickname}，我是某品牌商务，想和您洽谈合作，有意向请留联系方式！&#10;Hi {nickname}，看了您的内容非常棒，想聊聊品牌合作，期待您的回复～"
               />
               <div class="field-hint">
                 支持 <code>{nickname}</code> 占位符 ·
-                <el-text type="danger" size="small">⚠ 请勿换行，否则会被拆成多条触发发送限制</el-text>
+                每行一条模板，多行时每次<strong>随机取一条</strong>发送 ·
+                <el-text type="danger" size="small">⚠ 每条模板请勿在行内换行，否则会被拆成多条触发发送限制</el-text>
               </div>
             </el-form-item>
             <el-form-item label="每日上限（条）">
@@ -93,12 +94,13 @@
               <el-input
                 v-model="form['comment.template']"
                 type="textarea"
-                :rows="3"
-                placeholder="请写成一行，建议不超过 100 字"
+                :rows="5"
+                placeholder="可输入多行，每行一条模板，每次随机取一条发送&#10;示例：&#10;{nickname} 内容很棒，想聊聊品牌合作，有意向请私信我！&#10;看了 {nickname} 的作品，想和您合作，欢迎私信！"
               />
               <div class="field-hint">
                 支持 <code>{nickname}</code> 占位符 ·
-                <el-text type="warning" size="small">建议单行，不超过 100 字</el-text>
+                每行一条模板，多行时每次<strong>随机取一条</strong>发送 ·
+                <el-text type="warning" size="small">每条建议不超过 100 字</el-text>
               </div>
             </el-form-item>
             <el-form-item label="每日上限（条）">

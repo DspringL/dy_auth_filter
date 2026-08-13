@@ -115,10 +115,13 @@ class DMService:
         self,
         page: Page,
         captcha_event_handler: CaptchaEventHandler | None = None,
+        task_log=None,
     ):
         self._page = page
         self._record = SentRecord()
         self._captcha_event_handler = captcha_event_handler
+        # task_log(msg: str) 回调，用于将步骤写入任务进度日志
+        self._task_log = task_log or (lambda msg: None)
 
     async def _pause_for_captcha(self, reason: str) -> bool:
         return await handle_captcha_if_present(
@@ -189,14 +192,15 @@ class DMService:
         """
         page = self._page
         nickname = profile.nickname or profile.uid
-        # 强制去掉换行符，确保整条模板作为一条消息发送
-        # 抖音限制：对方回复前只能发一条，多行会被拆成多条导致失败
+        # 多行模板随机取一行，强制单行，避免被拆成多条
         message = render_single_line(_get_template(), nickname)
+        task_log = self._task_log
         logger.info(f"[DM] 准备发送（{len(message)} 字）：{message[:50]}...")
         profile_url = profile.profile_url
 
         if not profile_url:
             logger.warning(f"「{nickname}」无主页链接，跳过")
+            task_log(f"⚠️ 私信「{nickname}」跳过：无主页链接")
             return False
 
         profile_api = "/aweme/v1/web/user/profile/other/"
@@ -228,6 +232,7 @@ class DMService:
         try:
             current_url = page.url.split("?", 1)[0].rstrip("/")
             if current_url != profile_url.split("?", 1)[0].rstrip("/"):
+                task_log(f"打开主页：{nickname}（{profile_url}）")
                 logger.info(f"导航到主页：{profile_url}")
                 ok = await navigate_with_captcha_guard(
                     page,
@@ -252,8 +257,10 @@ class DMService:
                 logger.info(f"[DM] 顺带采集 IP：{nickname} → {profile.ip_location}")
             if dm_btn is None:
                 logger.warning(f"「{nickname}」主页找不到私信按钮，跳过")
+                task_log(f"⚠️ 私信「{nickname}」失败：找不到私信按钮")
                 return False
 
+            task_log(f"私信「{nickname}」：点击发私信按钮")
             await dm_btn.click()
             await self._pause_for_captcha("dm-after-button")
 
@@ -277,9 +284,12 @@ class DMService:
 
             if input_box is None:
                 logger.warning(f"「{nickname}」找不到私信输入框")
+                task_log(f"⚠️ 私信「{nickname}」失败：找不到输入框")
                 return False
 
+            task_log(f"私信「{nickname}」：输入消息（{len(message)} 字）")
             await _fill_input(input_box, message, page)
+
             # ── 点击发送 ─────────────────────────────────────────────────────
             send_selectors = [
                 'button[data-e2e="chat-send-btn"]',
@@ -289,6 +299,7 @@ class DMService:
             ]
             try:
                 await self._pause_for_captcha("dm-before-send")
+                task_log(f"私信「{nickname}」：发送消息")
                 async with page.expect_response(
                     lambda response: "/v1/message/send" in response.url,
                     timeout=10_000,
@@ -304,25 +315,31 @@ class DMService:
                 response = await response_info.value
                 if not response.ok:
                     logger.warning(f"「{nickname}」私信接口返回 HTTP {response.status}")
+                    task_log(f"❌ 私信「{nickname}」失败：接口返回 HTTP {response.status}")
                     return False
             except PWTimeout:
                 # 少数版本的 IM SDK 可能没有把响应暴露给 Page；输入框清空可作为
                 # 已被 SDK 接收的保守兜底，避免误判失败后重复发送。
                 if (await editor_text(input_box)).strip():
                     logger.warning(f"「{nickname}」未捕获到私信发送响应")
+                    task_log(f"⚠️ 私信「{nickname}」未捕获发送响应，可能失败")
                     return False
                 logger.warning(f"「{nickname}」发送响应未捕获，但输入框已清空，按成功处理")
 
-            logger.info(f"[DM] 单条操作耗时 {time.monotonic() - started:.2f}s")
+            elapsed = time.monotonic() - started
+            task_log(f"✅ 私信「{nickname}」完成（耗时 {elapsed:.1f}s）")
+            logger.info(f"[DM] 单条操作耗时 {elapsed:.2f}s")
             return True
 
         except CaptchaBlockedError:
             raise
         except PWTimeout:
             logger.error(f"「{nickname}」操作超时")
+            task_log(f"❌ 私信「{nickname}」超时")
             return False
         except Exception as e:
             logger.error(f"「{nickname}」发送失败：{e}")
+            task_log(f"❌ 私信「{nickname}」异常：{e}")
             return False
         finally:
             page.remove_listener("response", on_profile_response)

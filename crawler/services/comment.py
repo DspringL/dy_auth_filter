@@ -113,10 +113,13 @@ class CommentService:
         self,
         page: Page,
         captcha_event_handler: CaptchaEventHandler | None = None,
+        task_log=None,
     ):
         self._page = page
         self._record = CommentRecord()
         self._captcha_event_handler = captcha_event_handler
+        # task_log(msg: str) 回调，用于将步骤写入任务进度日志
+        self._task_log = task_log or (lambda msg: None)
 
     async def _pause_for_captcha(self, reason: str) -> bool:
         return await handle_captcha_if_present(
@@ -266,6 +269,7 @@ class CommentService:
         """
         page = self._page
         nickname = profile.nickname or profile.uid
+        task_log = self._task_log
 
         started = time.monotonic()
 
@@ -273,6 +277,7 @@ class CommentService:
         aweme_id = profile.latest_aweme_id
         ip = ""
         if not aweme_id:
+            task_log(f"打开主页：{nickname}（获取最新作品）")
             aweme_id, ip = await self._get_latest_aweme_id(profile.sec_user_id)
             profile.latest_aweme_id = aweme_id
         if ip and not profile.ip_location:
@@ -280,10 +285,12 @@ class CommentService:
             logger.info(f"[评论] 顺带采集 IP：{nickname} → {ip}")
         if not aweme_id:
             logger.warning(f"「{nickname}」未获取到最新作品，跳过评论")
+            task_log(f"⚠️ 评论「{nickname}」跳过：未获取到最新作品")
             return "", False
 
         # Step 2：导航到作品页
         video_url = f"https://www.douyin.com/video/{aweme_id}"
+        task_log(f"打开作品：{nickname} / 作品 {aweme_id}")
         logger.info(f"[评论] 导航到作品页：{video_url}")
         try:
             ok = await navigate_with_captcha_guard(
@@ -301,9 +308,10 @@ class CommentService:
             raise
         except Exception as e:
             logger.warning(f"「{nickname}」导航到作品页失败：{e}")
+            task_log(f"❌ 评论「{nickname}」失败：打开作品页异常（{e}）")
             return aweme_id, False
 
-        # Step 3：构造评论文本
+        # Step 3：构造评论文本（多行模板随机取一行）
         comment_text = render_single_line(_get_template(), nickname)
         logger.info(f"[评论] 准备发送（{len(comment_text)} 字）：{comment_text[:50]}...")
 
@@ -336,11 +344,13 @@ class CommentService:
 
         if input_el is None:
             logger.warning(f"「{nickname}」未找到评论输入框")
+            task_log(f"⚠️ 评论「{nickname}」失败：未找到评论输入框")
             return aweme_id, False
 
         logger.info("[评论] 已激活评论输入框")
 
         # Step 5：整段填充，避免 humanize="careful" 将逐字输入放大到几十秒。
+        task_log(f"评论「{nickname}」作品 {aweme_id}：输入评论（{len(comment_text)} 字）")
         await _fill_input(input_el, comment_text, page)
         logger.info("[评论] 输入完成")
 
@@ -355,6 +365,7 @@ class CommentService:
 
         try:
             await self._pause_for_captcha("comment-before-send")
+            task_log(f"评论「{nickname}」作品 {aweme_id}：点击发布")
             async with page.expect_response(
                 lambda response: "/aweme/v1/web/comment/publish" in response.url,
                 timeout=10_000,
@@ -370,6 +381,7 @@ class CommentService:
             response = await response_info.value
             if not response.ok:
                 logger.warning(f"「{nickname}」评论接口返回 HTTP {response.status}")
+                task_log(f"❌ 评论「{nickname}」失败：接口返回 HTTP {response.status}")
                 return aweme_id, False
             try:
                 body = await response.json()
@@ -378,6 +390,10 @@ class CommentService:
                         f"「{nickname}」评论接口业务码异常："
                         f"{body.get('status_code')} {body.get('status_msg', '')}"
                     )
+                    task_log(
+                        f"❌ 评论「{nickname}」失败：业务码 {body.get('status_code')} "
+                        f"{body.get('status_msg', '')}"
+                    )
                     return aweme_id, False
             except Exception:
                 # 非 JSON 响应仍以 HTTP 成功为准。
@@ -385,8 +401,11 @@ class CommentService:
         except PWTimeout:
             if (await editor_text(input_el)).strip():
                 logger.warning(f"「{nickname}」未捕获到评论发布响应")
+                task_log(f"⚠️ 评论「{nickname}」未捕获发布响应，可能失败")
                 return aweme_id, False
             logger.warning(f"「{nickname}」发布响应未捕获，但输入框已清空，按成功处理")
 
-        logger.info(f"[评论] 单条操作耗时 {time.monotonic() - started:.2f}s")
+        elapsed = time.monotonic() - started
+        task_log(f"✅ 评论「{nickname}」作品 {aweme_id} 完成（耗时 {elapsed:.1f}s）")
+        logger.info(f"[评论] 单条操作耗时 {elapsed:.2f}s")
         return aweme_id, True

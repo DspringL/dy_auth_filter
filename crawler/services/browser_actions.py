@@ -1,6 +1,7 @@
 """联系流程共用的快速、可验证浏览器操作。"""
 
 import asyncio
+import random
 import re
 import time
 
@@ -11,10 +12,23 @@ from playwright.async_api import Locator, Page
 VIDEO_ID_RE = re.compile(r"/video/(\d+)")
 
 
+def pick_random_line(template: str) -> str:
+    """
+    从多行模板中随机取一行非空内容返回。
+    若模板只有一行（或全是空行），则返回去首尾空白后的原始内容。
+    """
+    lines = [line.strip() for line in template.splitlines() if line.strip()]
+    if not lines:
+        return template.strip()
+    return random.choice(lines)
+
+
 def render_single_line(template: str, nickname: str) -> str:
-    """渲染模板并强制为单行，避免一次输入被拆成多条消息。"""
+    """渲染模板并强制为单行，避免一次输入被拆成多条消息。
+    当模板为多行时，先随机取一行再渲染。"""
+    line = pick_random_line(template)
     return (
-        template
+        line
         .replace("\r\n", " ")
         .replace("\n", " ")
         .replace("\r", " ")
