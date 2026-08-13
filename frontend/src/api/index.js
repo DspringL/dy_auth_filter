@@ -29,6 +29,7 @@ http.interceptors.response.use(
 export const loginApi = {
   status: () => http.get('/login/status'),
   triggerQrcode: () => http.post('/login/qrcode'),
+  logout: () => http.post('/login/logout'),
 }
 
 // ── 达人 ──────────────────────────────────────────────────────────────────────
@@ -43,6 +44,8 @@ export const kolApi = {
 export const taskApi = {
   run:       (data)  => http.post('/tasks/run', data),
   status:    (id)    => http.get(`/tasks/${id}`),
+  captchaScreenshotUrl: (id, version = '') =>
+    `${BASE_URL}/tasks/${id}/captcha-screenshot${version ? `?v=${encodeURIComponent(version)}` : ''}`,
   delete:    (id)    => http.delete(`/tasks/${id}`),
   deleteAll: ()      => http.delete('/tasks'),
 }

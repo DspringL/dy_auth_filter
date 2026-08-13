@@ -3,7 +3,7 @@
     <div class="page-title">系统设置</div>
 
     <el-row :gutter="16">
-      <!-- 左列：登录 + 筛选规则 -->
+      <!-- 左列：登录 -->
       <el-col :span="12">
         <!-- 登录状态 -->
         <el-card shadow="never" header="抖音账号登录" class="card">
@@ -33,49 +33,6 @@
             </el-descriptions-item>
             <el-descriptions-item label="说明">{{ store.loginStatus.message }}</el-descriptions-item>
           </el-descriptions>
-        </el-card>
-
-        <!-- 筛选规则 -->
-        <el-card shadow="never" class="card mt-4">
-          <template #header>
-            <div class="card-header">
-              <span>达人筛选规则</span>
-              <el-tag size="small" type="info" effect="plain">修改后立即生效</el-tag>
-            </div>
-          </template>
-          <el-form :model="form" label-width="120px" :disabled="saving">
-            <el-form-item label="粉丝下限">
-              <el-input-number
-                v-model="form['filter.min_followers']"
-                :min="0" :max="100000000" :step="10000"
-                controls-position="right" style="width:160px"
-              />
-              <span class="unit-hint">0 = 不限，如：10000 = 1万粉</span>
-            </el-form-item>
-            <el-form-item label="粉丝上限">
-              <el-input-number
-                v-model="form['filter.max_followers']"
-                :min="0" :step="10000"
-                controls-position="right" style="width:160px"
-              />
-              <span class="unit-hint">0 = 不限</span>
-            </el-form-item>
-            <el-form-item label="总点赞下限">
-              <el-input-number
-                v-model="form['filter.min_total_likes']"
-                :min="0" :step="1000" controls-position="right" style="width:160px"
-              />
-            </el-form-item>
-            <el-form-item label="最少作品数">
-              <el-input-number
-                v-model="form['filter.min_videos']"
-                :min="0" controls-position="right" style="width:160px"
-              />
-            </el-form-item>
-            <el-form-item label="必须有橱窗">
-              <el-switch v-model="form['filter.require_shop']" />
-            </el-form-item>
-          </el-form>
         </el-card>
       </el-col>
 
@@ -180,7 +137,7 @@
     <!-- 说明 -->
     <el-alert
       class="mt-4"
-      title="说明：修改保存后，下次发起任务时自动使用新配置。settings.yaml 中的值作为初始默认值，不会被覆盖。"
+      title="说明：私信和评论配置保存后，下次联系达人时自动使用新值。settings.yaml 中的值作为初始默认值，不会被覆盖。"
       type="info" :closable="false" show-icon
     />
   </div>
@@ -188,7 +145,7 @@
 
 <script setup>
 import { ref, reactive, onMounted, onUnmounted } from 'vue'
-import { Key, Refresh, Check, InfoFilled } from '@element-plus/icons-vue'
+import { Key, Refresh, Check } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/stores/app.js'
 import { configApi } from '@/api/index.js'
@@ -199,11 +156,6 @@ const saving  = ref(false)
 
 // 与后端 CONFIG_KEYS 对应的表单
 const form = reactive({
-  'filter.min_followers':   10000,
-  'filter.max_followers':   0,
-  'filter.min_total_likes': 10000,
-  'filter.min_videos':      0,
-  'filter.require_shop':    false,
   'dm.template':            '',
   'dm.daily_limit':         20,
   'dm.interval_min':        60,
@@ -281,7 +233,6 @@ async function handleLogin() {
 .mt-4 { margin-top: 16px; }
 .mb-3 { margin-bottom: 12px; }
 .card-header { display: flex; align-items: center; justify-content: space-between; }
-.unit-hint  { font-size: 12px; color: #8c8c8c; margin-left: 8px; }
 .field-hint { font-size: 12px; color: #8c8c8c; margin-top: 4px; }
 code { background: #f5f5f5; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
 

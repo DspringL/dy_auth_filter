@@ -56,7 +56,7 @@ search:
     video_scroll_interval_min: 4.0
     video_scroll_interval_max: 7.0
     # 验证码检测：出现验证码后等待时间（秒）
-    captcha_wait: 90
+    captcha_wait: 300
     # 验证码最大重试次数
     captcha_max_retry: 3
 

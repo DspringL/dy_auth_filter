@@ -6,6 +6,7 @@ export const useAppStore = defineStore('app', {
     loginStatus: { logged_in: false, message: '' },
     stats: { total_kols: 0, dm_sent: 0, dm_pending: 0, has_shop: 0 },
     loginLoading: false,
+    logoutLoading: false,
   }),
   actions: {
     async fetchLoginStatus() {
@@ -25,6 +26,15 @@ export const useAppStore = defineStore('app', {
         return res
       } finally {
         this.loginLoading = false
+      }
+    },
+    async logout() {
+      this.logoutLoading = true
+      try {
+        this.loginStatus = await loginApi.logout()
+        return this.loginStatus
+      } finally {
+        this.logoutLoading = false
       }
     },
   },

@@ -40,7 +40,8 @@ err()     { echo -e "${RED}[FAIL]${NC}  $*"; exit 1; }
 step()    { echo -e "\n${BOLD}── Step $* ──────────────────────────────────────${NC}"; }
 divider() { echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"; }
 
-clear
+# CI/Codex 等无终端环境没有 TERM，清屏失败不应中止正式构建。
+clear 2>/dev/null || true
 divider
 echo -e "${BOLD}   🎬  抖音达人联络官 — 桌面端一键构建${NC}"
 [ "$DEBUG" = true ] && echo -e "   模式：调试版（debug）" || echo -e "   模式：正式版（release）"

@@ -26,9 +26,19 @@
                     controls-position="right" style="width:140px" />
                   <span class="unit-hint">0=不限，如 10000=1万</span>
                 </el-form-item>
+                <el-form-item label="粉丝上限">
+                  <el-input-number v-model="searchForm.max_followers" :min="0" :step="10000"
+                    controls-position="right" style="width:140px" />
+                  <span class="unit-hint">0=不限</span>
+                </el-form-item>
                 <el-form-item label="总点赞下限">
                   <el-input-number v-model="searchForm.min_total_likes" :min="0" :step="1000"
                     controls-position="right" style="width:140px" />
+                </el-form-item>
+                <el-form-item label="总点赞上限">
+                  <el-input-number v-model="searchForm.max_total_likes" :min="0" :step="1000"
+                    controls-position="right" style="width:140px" />
+                  <span class="unit-hint">0=不限</span>
                 </el-form-item>
                 <el-form-item label="必须有橱窗">
                   <el-switch v-model="searchForm.require_shop" />
@@ -67,20 +77,58 @@
                     default-first-option
                     placeholder="如：美妆教程、好物分享" style="width:100%" />
                 </el-form-item>
-                <el-divider content-position="left" class="div-sm">筛选条件</el-divider>
+                <el-divider content-position="left" class="div-sm">搜索条件</el-divider>
+                <el-form-item label="排序方式">
+                  <el-radio-group v-model="videoForm.video_sort_type">
+                    <el-radio-button :value="0">综合排序</el-radio-button>
+                    <el-radio-button :value="2">最新发布</el-radio-button>
+                    <el-radio-button :value="1">最多点赞</el-radio-button>
+                  </el-radio-group>
+                </el-form-item>
+                <el-form-item label="发布时间">
+                  <el-radio-group v-model="videoForm.video_publish_time">
+                    <el-radio-button :value="0">不限</el-radio-button>
+                    <el-radio-button :value="1">一天内</el-radio-button>
+                    <el-radio-button :value="7">一周内</el-radio-button>
+                    <el-radio-button :value="180">半年内</el-radio-button>
+                  </el-radio-group>
+                </el-form-item>
+                <el-divider content-position="left" class="div-sm">作品表现</el-divider>
+                <el-form-item label="最低点赞">
+                  <el-input-number v-model="videoForm.min_video_likes" :min="0" :step="1000"
+                    controls-position="right" style="width:140px" />
+                  <span class="unit-hint">0=不限</span>
+                </el-form-item>
+                <el-form-item label="最低收藏">
+                  <el-input-number v-model="videoForm.min_video_collects" :min="0" :step="100"
+                    controls-position="right" style="width:140px" />
+                  <span class="unit-hint">0=不限</span>
+                </el-form-item>
+                <el-form-item label="最低评论">
+                  <el-input-number v-model="videoForm.min_video_comments" :min="0" :step="100"
+                    controls-position="right" style="width:140px" />
+                  <span class="unit-hint">0=不限</span>
+                </el-form-item>
+                <el-form-item label="最低分享">
+                  <el-input-number v-model="videoForm.min_video_shares" :min="0" :step="100"
+                    controls-position="right" style="width:140px" />
+                  <span class="unit-hint">0=不限</span>
+                </el-form-item>
+                <el-divider content-position="left" class="div-sm">作者条件</el-divider>
                 <el-form-item label="粉丝下限">
                   <el-input-number v-model="videoForm.min_followers" :min="0" :step="10000"
                     controls-position="right" style="width:140px" />
                   <span class="unit-hint">0=不限</span>
                 </el-form-item>
-                <el-form-item label="总点赞下限">
-                  <el-input-number v-model="videoForm.min_total_likes" :min="0" :step="1000"
+                <el-form-item label="粉丝上限">
+                  <el-input-number v-model="videoForm.max_followers" :min="0" :step="10000"
                     controls-position="right" style="width:140px" />
+                  <span class="unit-hint">0=不限</span>
                 </el-form-item>
                 <el-form-item label="每关键词数量">
                   <el-input-number v-model="videoForm.max_per_keyword" :min="1" :max="200" :step="10"
                     controls-position="right" style="width:140px" />
-                  <span class="unit-hint">每个关键词最多抓取的作品作者数</span>
+                  <span class="unit-hint">每个关键词最多抓取的作品数</span>
                 </el-form-item>
                 <el-divider content-position="left" class="div-sm">联系方式</el-divider>
                 <el-form-item label="联系方式">
@@ -295,7 +343,7 @@
                   </el-tag>
                   <span class="task-id">任务 #{{ t.task_id }}</span>
                   <el-button
-                    v-if="t.status !== 'running'"
+                    v-if="!isTaskActive(t.status)"
                     size="small" text type="danger"
                     style="margin-left:auto"
                     @click="deleteTask(t.task_id)"
@@ -305,13 +353,13 @@
                   <el-col :span="6">
                     <div class="stat-mini">
                       <div class="stat-mini-val">{{ t.total_found }}</div>
-                      <div class="stat-mini-label">{{ t.search_type === 'video' ? '提取作者' : '搜索到' }}</div>
+                      <div class="stat-mini-label">{{ t.search_type === 'video' ? '候选作品' : '搜索到' }}</div>
                     </div>
                   </el-col>
                   <el-col :span="6">
                     <div class="stat-mini">
                       <div class="stat-mini-val">{{ t.total_passed }}</div>
-                      <div class="stat-mini-label">通过筛选</div>
+                      <div class="stat-mini-label">{{ t.search_type === 'video' ? '候选达人' : '通过筛选' }}</div>
                     </div>
                   </el-col>
                   <el-col :span="6">
@@ -328,7 +376,7 @@
                   </el-col>
                 </el-row>
                 <el-progress
-                  v-if="t.status === 'running'"
+                  v-if="isTaskActive(t.status)"
                   :percentage="99" status="active"
                   :striped="true" :striped-flow="true" class="mt-2"
                 />
@@ -343,16 +391,55 @@
                   <el-tag size="small" effect="plain" v-if="t.min_followers">
                     粉丝≥{{ formatNum(t.min_followers) }}
                   </el-tag>
-                  <el-tag size="small" effect="plain" v-if="t.min_total_likes">
+                  <el-tag size="small" effect="plain" v-if="t.max_followers">
+                    粉丝≤{{ formatNum(t.max_followers) }}
+                  </el-tag>
+                  <el-tag size="small" effect="plain" v-if="t.search_type !== 'video' && t.min_total_likes">
                     点赞≥{{ formatNum(t.min_total_likes) }}
                   </el-tag>
-                  <el-tag size="small" type="success" effect="plain" v-if="t.require_shop">
+                  <el-tag size="small" effect="plain" v-if="t.search_type !== 'video' && t.max_total_likes">
+                    点赞≤{{ formatNum(t.max_total_likes) }}
+                  </el-tag>
+                  <el-tag size="small" type="warning" effect="plain" v-if="t.search_type === 'video'">
+                    {{ videoSortLabel(t.video_sort_type) }} / {{ videoPublishLabel(t.video_publish_time) }}
+                  </el-tag>
+                  <el-tag size="small" effect="plain" v-if="t.search_type === 'video' && t.min_video_likes">
+                    作品点赞≥{{ formatNum(t.min_video_likes) }}
+                  </el-tag>
+                  <el-tag size="small" effect="plain" v-if="t.search_type === 'video' && t.min_video_collects">
+                    收藏≥{{ formatNum(t.min_video_collects) }}
+                  </el-tag>
+                  <el-tag size="small" effect="plain" v-if="t.search_type === 'video' && t.min_video_comments">
+                    评论≥{{ formatNum(t.min_video_comments) }}
+                  </el-tag>
+                  <el-tag size="small" effect="plain" v-if="t.search_type === 'video' && t.min_video_shares">
+                    分享≥{{ formatNum(t.min_video_shares) }}
+                  </el-tag>
+                  <el-tag size="small" type="success" effect="plain" v-if="t.search_type !== 'video' && t.require_shop">
                     需橱窗
                   </el-tag>
                   <el-tag size="small" :type="contactTagType(t.contact_method)" effect="plain"
                     v-if="t.contact_method && t.contact_method !== 'none'">
                     {{ contactTagLabel(t.contact_method) }}
                   </el-tag>
+                </div>
+                <el-alert
+                  v-if="t.captcha_required"
+                  title="需要人工处理抖音验证码"
+                  :description="t.captcha_message || '任务已暂停，请在抖音浏览器中完成验证；完成后程序会自动继续。'"
+                  type="warning" :closable="false" show-icon class="mt-2"
+                />
+                <div v-if="t.captcha_required && t.captcha_screenshot" class="captcha-preview mt-2">
+                  <el-image
+                    :src="captchaScreenshotUrl(t)"
+                    :preview-src-list="[captchaScreenshotUrl(t)]"
+                    fit="contain"
+                    class="captcha-image"
+                    preview-teleported
+                  />
+                  <div class="captcha-help">
+                    请切换到服务打开的抖音浏览器完成人工验证。截图同时保存在系统下载目录的“DouyinKOL验证码”文件夹中。
+                  </div>
                 </div>
                 <el-alert
                   v-if="t.error_msg" :title="t.error_msg"
@@ -381,9 +468,9 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import {
   VideoPlay, Message, ChatDotRound, Connection,
-  User, Promotion, InfoFilled, UploadFilled, CircleCheck, Search,
+  User, Promotion, UploadFilled, CircleCheck, Search,
 } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElNotification } from 'element-plus'
 import { taskApi, dmApi, userApi } from '@/api/index.js'
 import { useTaskStore } from '@/stores/tasks.js'
 import dayjs from 'dayjs'
@@ -397,7 +484,8 @@ const tasks = taskStore.tasks
 
 // ── 搜索用户表单 ──────────────────────────────────────────────────────────────
 const searchForm = ref({
-  keywords: [], min_followers: 10000, min_total_likes: 10000,
+  keywords: [], min_followers: 10000, max_followers: 0,
+  min_total_likes: 10000, max_total_likes: 0,
   require_shop: false, contact_method: 'none', max_per_keyword: 50,
 })
 const searchRules = { keywords: [{ required: true, message: '请至少输入一个关键词', trigger: 'change' }] }
@@ -406,6 +494,14 @@ const searchSubmitting = ref(false)
 
 async function submitSearch() {
   await searchFormRef.value.validate()
+  if (searchForm.value.max_followers > 0 && searchForm.value.max_followers < searchForm.value.min_followers) {
+    ElMessage.warning('粉丝上限不能小于粉丝下限')
+    return
+  }
+  if (searchForm.value.max_total_likes > 0 && searchForm.value.max_total_likes < searchForm.value.min_total_likes) {
+    ElMessage.warning('总点赞上限不能小于总点赞下限')
+    return
+  }
   searchSubmitting.value = true
   try {
     const res = await taskApi.run({ ...searchForm.value, search_type: 'user' })
@@ -420,14 +516,21 @@ async function submitSearch() {
 
 // ── 搜索作品表单 ──────────────────────────────────────────────────────────────
 const videoForm = ref({
-  keywords: [], min_followers: 10000, min_total_likes: 10000,
-  require_shop: false, contact_method: 'none', max_per_keyword: 50,
+  keywords: [], video_sort_type: 0, video_publish_time: 0,
+  min_video_likes: 0, min_video_collects: 0,
+  min_video_comments: 0, min_video_shares: 0,
+  min_followers: 0, max_followers: 0,
+  contact_method: 'none', max_per_keyword: 50,
 })
 const videoFormRef    = ref(null)
 const videoSubmitting = ref(false)
 
 async function submitVideo() {
   await videoFormRef.value.validate()
+  if (videoForm.value.max_followers > 0 && videoForm.value.max_followers < videoForm.value.min_followers) {
+    ElMessage.warning('粉丝上限不能小于粉丝下限')
+    return
+  }
   videoSubmitting.value = true
   try {
     const res = await taskApi.run({ ...videoForm.value, search_type: 'video' })
@@ -616,10 +719,12 @@ async function submitDirect() {
 
 // ── 任务进度 ───────────────────────────────────────────────────────────────────
 let pollTimers = {}
+let captchaNotifications = {}
 
-function statusType(s) { return { running: 'warning', done: 'success', error: 'danger' }[s] || 'info' }
-function statusText(s) { return { running: '执行中', done: '已完成', error: '失败' }[s] || s }
-function timelineType(s) { return { running: 'warning', done: 'success', error: 'danger' }[s] || 'primary' }
+function isTaskActive(s) { return s === 'running' || s === 'waiting_captcha' }
+function statusType(s) { return { running: 'warning', waiting_captcha: 'danger', done: 'success', error: 'danger' }[s] || 'info' }
+function statusText(s) { return { running: '执行中', waiting_captcha: '等待验证码', done: '已完成', error: '失败' }[s] || s }
+function timelineType(s) { return { running: 'warning', waiting_captcha: 'danger', done: 'success', error: 'danger' }[s] || 'primary' }
 function formatDate(d) { return d ? dayjs(d).format('MM-DD HH:mm:ss') : '—' }
 function formatNum(n) {
   if (!n) return '0'
@@ -628,16 +733,45 @@ function formatNum(n) {
 }
 function contactTagType(m) { return { dm: 'primary', comment: 'success', both: 'warning' }[m] || 'info' }
 function contactTagLabel(m) { return { dm: '私信', comment: '评论', both: '私信+评论' }[m] || m }
+function videoSortLabel(v) { return { 0: '综合排序', 1: '最多点赞', 2: '最新发布' }[v] || '综合排序' }
+function videoPublishLabel(v) { return { 0: '不限', 1: '一天内', 7: '一周内', 180: '半年内' }[v] || '不限' }
+function captchaScreenshotUrl(task) { return taskApi.captchaScreenshotUrl(task.task_id, task.captcha_screenshot) }
 
 function pollTask(taskId, searchType) {
   clearInterval(pollTimers[taskId])
   pollTimers[taskId] = setInterval(async () => {
     try {
+      const previous = tasks.find(t => t.task_id === taskId)
+      const wasWaiting = Boolean(previous?.captcha_required)
+      const previousCaptchaMessage = previous?.captcha_message
       const res = await taskApi.status(taskId)
       res.search_type = searchType
       // 用 store 的 updateTask 更新，切换菜单后数据不丢失
       taskStore.updateTask(taskId, res)
-      if (res.status !== 'running') clearInterval(pollTimers[taskId])
+      const captchaMessageChanged = res.captcha_message !== previousCaptchaMessage
+      if (res.captcha_required && (!wasWaiting || captchaMessageChanged)) {
+        captchaNotifications[taskId]?.close()
+        captchaNotifications[taskId] = ElNotification({
+          title: res.captcha_message?.includes('5202')
+            ? `任务 #${taskId} 验证码图片加载失败`
+            : `任务 #${taskId} 需要人工验证`,
+          message: res.captcha_message || '任务已暂停，请立即切换到抖音浏览器完成验证码；完成后会自动继续。',
+          type: res.captcha_message?.includes('5202') ? 'error' : 'warning',
+          duration: 0,
+          position: 'top-right',
+        })
+      } else if (!res.captcha_required && wasWaiting) {
+        captchaNotifications[taskId]?.close()
+        delete captchaNotifications[taskId]
+        if (res.status === 'running') {
+          ElNotification.success({
+            title: `任务 #${taskId} 已恢复`,
+            message: '验证码已完成，任务正在自动继续。',
+            duration: 4000,
+          })
+        }
+      }
+      if (!isTaskActive(res.status)) clearInterval(pollTimers[taskId])
     } catch { clearInterval(pollTimers[taskId]) }
   }, 3000)
 }
@@ -661,8 +795,14 @@ async function deleteAllTasks() {
   }
 }
 
-onMounted(() => {})
-onUnmounted(() => Object.values(pollTimers).forEach(clearInterval))
+onMounted(() => {
+  tasks.filter(t => isTaskActive(t.status)).forEach(t => pollTask(t.task_id, t.search_type))
+})
+onUnmounted(() => {
+  Object.values(pollTimers).forEach(clearInterval)
+  Object.values(captchaNotifications).forEach(notification => notification?.close())
+  captchaNotifications = {}
+})
 </script>
 
 <style scoped>
@@ -695,6 +835,13 @@ onUnmounted(() => Object.values(pollTimers).forEach(clearInterval))
 .mt-3 { margin-top: 12px; }
 .div-sm { margin: 12px 0 8px; }
 .unit-hint { font-size: 12px; color: #8c8c8c; margin-left: 8px; }
+.captcha-preview {
+  display: flex; gap: 12px; align-items: center;
+  padding: 10px; border: 1px solid #e6a23c; border-radius: 6px;
+  background: #fdf6ec;
+}
+.captcha-image { width: 180px; height: 110px; flex-shrink: 0; background: #fff; }
+.captcha-help { color: #7a4b00; font-size: 13px; line-height: 1.6; }
 
 /* 直接联系相关 */
 .upload-area { width: 100%; }

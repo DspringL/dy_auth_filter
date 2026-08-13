@@ -25,6 +25,13 @@ from crawler.services.browser_actions import (
     render_single_line,
 )
 from crawler.utils.config import get, ROOT_DIR
+from crawler.utils.captcha import (
+    CaptchaBlockedError,
+    CaptchaEventHandler,
+    handle_captcha_if_present,
+    latest_captcha_screenshot,
+    navigate_with_captcha_guard,
+)
 
 # 仅路径保持模块级常量
 SENT_FILE: Path = ROOT_DIR / get("comment.sent_record_file", "data/comment_sent.json")
@@ -102,9 +109,21 @@ class CommentRecord:
 class CommentService:
     """通过浏览器自动化在达人最新作品下发评论"""
 
-    def __init__(self, page: Page):
+    def __init__(
+        self,
+        page: Page,
+        captcha_event_handler: CaptchaEventHandler | None = None,
+    ):
         self._page = page
         self._record = CommentRecord()
+        self._captcha_event_handler = captcha_event_handler
+
+    async def _pause_for_captcha(self, reason: str) -> bool:
+        return await handle_captcha_if_present(
+            self._page,
+            reason=reason,
+            event_handler=getattr(self, "_captcha_event_handler", None),
+        )
 
     async def send_batch(self, profiles: list[KOLProfile]) -> dict:
         """
@@ -203,7 +222,17 @@ class CommentService:
             profile_url = f"https://www.douyin.com/user/{sec_user_id}"
             current_url = page.url.split("?", 1)[0].rstrip("/")
             if current_url != profile_url.rstrip("/"):
-                await page.goto(profile_url, wait_until="domcontentloaded", timeout=25_000)
+                ok = await navigate_with_captcha_guard(
+                    page,
+                    profile_url,
+                    timeout=25_000,
+                    event_handler=getattr(self, "_captcha_event_handler", None),
+                )
+                if not ok:
+                    raise CaptchaBlockedError(
+                        "评论主页被验证码阻止"
+                        f"；截图：{latest_captcha_screenshot() or '未生成'}"
+                    )
 
             # 接口可能返回空 aweme_list（本次 js-reverse 实测即为此情况），
             # 因此同时读取主页已经渲染出的 /video/{id} 链接作为可靠兜底。
@@ -214,6 +243,8 @@ class CommentService:
                     result.append(dom_aweme_id)
                     break
                 await asyncio.sleep(0.1)
+        except CaptchaBlockedError:
+            raise
         except Exception as e:
             logger.debug(f"访问主页失败：{e}")
         finally:
@@ -255,7 +286,19 @@ class CommentService:
         video_url = f"https://www.douyin.com/video/{aweme_id}"
         logger.info(f"[评论] 导航到作品页：{video_url}")
         try:
-            await page.goto(video_url, wait_until="domcontentloaded", timeout=25_000)
+            ok = await navigate_with_captcha_guard(
+                page,
+                video_url,
+                timeout=25_000,
+                event_handler=getattr(self, "_captcha_event_handler", None),
+            )
+            if not ok:
+                raise CaptchaBlockedError(
+                    "评论作品页被验证码阻止"
+                    f"；截图：{latest_captcha_screenshot() or '未生成'}"
+                )
+        except CaptchaBlockedError:
+            raise
         except Exception as e:
             logger.warning(f"「{nickname}」导航到作品页失败：{e}")
             return aweme_id, False
@@ -279,6 +322,7 @@ class CommentService:
 
         # 新版页面初始只有一个“留下你的精彩评论吧”占位容器，点击后才创建
         # Draft.js contenteditable。先做一次即时探测，再等待并激活占位容器。
+        await self._pause_for_captcha("comment-before-input")
         input_el = await find_first_visible(page, direct_input_selectors, timeout=0.2)
         if input_el is None:
             placeholder = await find_first_visible(page, [
@@ -310,6 +354,7 @@ class CommentService:
         ]
 
         try:
+            await self._pause_for_captcha("comment-before-send")
             async with page.expect_response(
                 lambda response: "/aweme/v1/web/comment/publish" in response.url,
                 timeout=10_000,

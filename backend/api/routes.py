@@ -2,6 +2,7 @@
 FastAPI 路由层
 GET  /api/login/status       - 登录状态
 POST /api/login/qrcode       - 触发扫码登录
+POST /api/login/logout       - 退出登录
 GET  /api/kols               - 达人列表（分页+筛选）
 GET  /api/kols/{id}          - 达人详情
 POST /api/tasks/run          - 触发搜索+筛选+私信任务
@@ -37,6 +38,7 @@ router = APIRouter(prefix="/api")
 # ── 全局状态 ──────────────────────────────────────────────────────────────────
 _task_status: dict[int, dict] = {}
 _login_state  = {"logged_in": False, "pending": False}
+_login_task: _asyncio.Task | None = None
 _task_id_counter = 0
 
 _browser_lock  = _asyncio.Lock()   # 防止并发初始化浏览器
@@ -81,6 +83,9 @@ async def trigger_qrcode_login(background_tasks: BackgroundTasks):
         return LoginStatus(logged_in=True, message="已登录，无需重复操作")
 
     async def _do_login():
+        global _login_task
+        current_task = _asyncio.current_task()
+        _login_task = current_task
         _login_state["pending"] = True
         try:
             from crawler.core.browser import get_browser
@@ -95,12 +100,39 @@ async def trigger_qrcode_login(background_tasks: BackgroundTasks):
             _login_state["logged_in"] = False
         finally:
             _login_state["pending"] = False
+            if _login_task is current_task:
+                _login_task = None
 
     background_tasks.add_task(_do_login)
     return LoginStatus(
         logged_in=False,
         message="二维码登录已触发，请查看浏览器窗口使用抖音 App 扫码，扫码成功后页面自动刷新",
     )
+
+
+@router.post("/auth/logout", response_model=LoginStatus, include_in_schema=False)
+@router.post("/logout", response_model=LoginStatus, include_in_schema=False)
+@router.post("/login/logout", response_model=LoginStatus, tags=["登录"])
+async def logout_douyin():
+    """取消扫码等待并清除浏览器 Profile 与本地文件中的抖音登录态。"""
+    global _login_task
+
+    login_task = _login_task
+    if login_task is not None and login_task is not _asyncio.current_task():
+        login_task.cancel()
+        await _asyncio.gather(login_task, return_exceptions=True)
+        _login_task = None
+
+    from crawler.core.browser import get_browser
+    from crawler.core.login import logout
+
+    async with _browser_lock:
+        manager = await get_browser()
+        await logout(manager)
+
+    _login_state["logged_in"] = False
+    _login_state["pending"] = False
+    return LoginStatus(logged_in=False, message="已退出登录")
 
 
 # ── 达人查询 ──────────────────────────────────────────────────────────────────
@@ -182,13 +214,24 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
         "finished_at": None,
         "error_msg": None,
         "logs": [],
+        "captcha_required": False,
+        "captcha_message": None,
+        "captcha_screenshot": None,
         # 记录本次任务的请求参数，供前端展示
         "keywords": req.keywords,
         "search_type": req.search_type,
         "contact_method": req.contact_method,
         "max_per_keyword": req.max_per_keyword,
         "min_followers": req.min_followers,
+        "max_followers": req.max_followers,
         "min_total_likes": req.min_total_likes,
+        "max_total_likes": req.max_total_likes,
+        "video_sort_type": req.video_sort_type,
+        "video_publish_time": req.video_publish_time,
+        "min_video_likes": req.min_video_likes,
+        "min_video_collects": req.min_video_collects,
+        "min_video_comments": req.min_video_comments,
+        "min_video_shares": req.min_video_shares,
         "require_shop": req.require_shop,
     }
 
@@ -200,18 +243,65 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
         from loguru import logger as _lg
         _lg.info(f"[任务#{task_id}] {msg}")
 
+    def on_captcha_event(event: str, screenshot):
+        """将验证码暂停状态实时暴露给任务轮询接口。"""
+        state = _task_status[task_id]
+        screenshot_text = str(screenshot) if screenshot else None
+        if event == "required":
+            already_waiting = state.get("captcha_required", False)
+            state["status"] = "waiting_captcha"
+            state["captcha_required"] = True
+            state["captcha_screenshot"] = screenshot_text
+            state["captcha_message"] = (
+                "检测到抖音验证码，任务已暂停。请切换到抖音浏览器手动完成验证，"
+                "完成后程序会自动继续。"
+            )
+            if not already_waiting:
+                task_log(
+                    "⚠️ 检测到验证码，任务已暂停，请在抖音浏览器中人工处理"
+                    f"；截图：{screenshot_text or '未生成'}"
+                )
+        elif event == "cleared":
+            state["status"] = "running"
+            state["captcha_required"] = False
+            state["captcha_message"] = "验证码已完成，任务正在自动继续"
+            task_log("✅ 验证码已人工完成，任务自动继续")
+        elif event == "load_failed":
+            state["status"] = "waiting_captcha"
+            state["captcha_required"] = True
+            if screenshot_text:
+                state["captcha_screenshot"] = screenshot_text
+            state["captcha_message"] = (
+                "验证码素材加载失败（5202），任务仍保持暂停。请切换网络后点击"
+                "验证码弹窗内的“刷新”；不要刷新任务管理页。最新截图已保存到下载目录。"
+            )
+            task_log(
+                "⚠️ 验证码素材加载失败（5202），继续暂停等待人工处理"
+                f"；截图：{screenshot_text or '未生成'}"
+            )
+        elif event == "timeout":
+            state["captcha_required"] = False
+            state["captcha_message"] = "验证码等待超时，本次任务将停止"
+            task_log("❌ 验证码等待超时")
+
     async def _run():
         from backend.models.database import AsyncSessionLocal
         from crawler.core.browser import get_browser
         from crawler.core.login import load_cookies_as_dict, LOGIN_COOKIES
         from crawler.services.search import DouyinSearchService
-        from crawler.services.filter import KOLFilter, FilterConfig
+        from crawler.services.filter import (
+            FilterConfig,
+            KOLFilter,
+            VideoFilter,
+            VideoFilterConfig,
+        )
         from crawler.services.dm import DMService
         from crawler.utils.config import get as cfg_get
 
         # 串行锁：等待上一个任务完成后再启动，避免共用浏览器冲突
         async with _task_run_lock:
             async with AsyncSessionLocal() as db:
+                page = None
                 try:
                     # 记录任务
                     search_type = getattr(req, 'search_type', 'user')
@@ -246,17 +336,11 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
                     except Exception as eg:
                         task_log(f"主页加载警告（忽略）：{eg}")
 
-                    # 筛选配置（优先请求参数，其次运行时配置）
-                    filter_cfg = FilterConfig(
-                        min_followers   = req.min_followers   if req.min_followers   is not None else get_runtime("filter.min_followers", 0),
-                        max_followers   = req.max_followers   if req.max_followers   is not None else get_runtime("filter.max_followers", 0),
-                        min_total_likes = req.min_total_likes if req.min_total_likes is not None else get_runtime("filter.min_total_likes", 0),
-                        require_shop    = req.require_shop    if req.require_shop    is not None else get_runtime("filter.require_shop", False),
-                    )
-                    task_log(f"筛选条件：粉丝≥{filter_cfg.min_followers}，点赞≥{filter_cfg.min_total_likes}，橱窗={filter_cfg.require_shop}")
-
                     # 搜索（根据 search_type 选择用户搜索或视频搜索）
-                    search_svc = DouyinSearchService(page)
+                    search_svc = DouyinSearchService(
+                        page,
+                        captcha_event_handler=on_captcha_event,
+                    )
                     max_per_kw = req.max_per_keyword if req.max_per_keyword else int(get_runtime(
                         "search.max_users_per_keyword",
                         int(cfg_get("search.max_users_per_keyword", 50))
@@ -265,22 +349,65 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
 
                     search_type = getattr(req, 'search_type', 'user')
                     if search_type == "video":
-                        raw_profiles = await search_svc.batch_search_videos(
-                            req.keywords, max_per_keyword=max_per_kw
+                        sort_labels = {0: "综合排序", 1: "最多点赞", 2: "最新发布"}
+                        publish_labels = {0: "不限", 1: "一天内", 7: "一周内", 180: "半年内"}
+                        video_filter = VideoFilter(VideoFilterConfig(
+                            min_followers=req.min_followers,
+                            max_followers=req.max_followers,
+                            min_likes=req.min_video_likes,
+                            min_collects=req.min_video_collects,
+                            min_comments=req.min_video_comments,
+                            min_shares=req.min_video_shares,
+                        ))
+                        task_log(
+                            "作品条件："
+                            f"排序={sort_labels[req.video_sort_type]}，"
+                            f"发布时间={publish_labels[req.video_publish_time]}，"
+                            f"点赞≥{req.min_video_likes}，收藏≥{req.min_video_collects}，"
+                            f"评论≥{req.min_video_comments}，分享≥{req.min_video_shares}，"
+                            f"作者粉丝={req.min_followers}~{req.max_followers or '不限'}"
                         )
+                        raw_profiles = await search_svc.batch_search_videos(
+                            req.keywords,
+                            max_per_keyword=max_per_kw,
+                            sort_type=req.video_sort_type,
+                            publish_time=req.video_publish_time,
+                        )
+                        passed_works = video_filter.apply(raw_profiles)
+                        passed = video_filter.dedupe_authors(passed_works)
                     else:
+                        # 用户搜索按达人账号的聚合指标筛选；0 表示不限制。
+                        filter_cfg = FilterConfig(
+                            min_followers=req.min_followers,
+                            max_followers=req.max_followers,
+                            min_total_likes=req.min_total_likes,
+                            max_total_likes=req.max_total_likes,
+                            require_shop=req.require_shop,
+                        )
+                        task_log(
+                            "达人条件："
+                            f"粉丝={filter_cfg.min_followers}~{filter_cfg.max_followers or '不限'}，"
+                            f"总点赞={filter_cfg.min_total_likes}~{filter_cfg.max_total_likes or '不限'}，"
+                            f"橱窗={filter_cfg.require_shop}"
+                        )
                         raw_profiles = await search_svc.batch_search(
                             req.keywords, max_per_keyword=max_per_kw
                         )
+                        kol_filter = KOLFilter(filter_cfg)
+                        passed = kol_filter.apply(raw_profiles)
+                        passed = kol_filter.sort_by_popularity(passed)
                     _task_status[task_id]["total_found"] = len(raw_profiles)
-                    task_log(f"搜索完成，共找到 {len(raw_profiles)} 个候选达人")
+                    found_unit = "条候选作品" if search_type == "video" else "个候选达人"
+                    task_log(f"搜索完成，共找到 {len(raw_profiles)} {found_unit}")
 
-                    # 筛选
-                    kol_filter = KOLFilter(filter_cfg)
-                    passed = kol_filter.apply(raw_profiles)
-                    passed = kol_filter.sort_by_popularity(passed)
                     _task_status[task_id]["total_passed"] = len(passed)
-                    task_log(f"筛选完成，通过 {len(passed)}/{len(raw_profiles)} 个达人")
+                    if search_type == "video":
+                        task_log(
+                            f"作品筛选及作者去重完成，通过 {len(passed_works)} 条作品，"
+                            f"得到 {len(passed)} 位达人"
+                        )
+                    else:
+                        task_log(f"筛选完成，通过 {len(passed)}/{len(raw_profiles)} 个达人")
 
                     # 先入库（IP 属地后续访问主页时再更新）
                     for profile in passed:
@@ -299,8 +426,8 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
                             from crawler.services.comment import CommentService
                             from crawler.services.contact import CombinedContactService
 
-                            dm_svc = DMService(page)
-                            cmt_svc = CommentService(page)
+                            dm_svc = DMService(page, captcha_event_handler=on_captcha_event)
+                            cmt_svc = CommentService(page, captcha_event_handler=on_captcha_event)
                             combined_svc = CombinedContactService(dm_svc, cmt_svc)
                             status_labels = {
                                 "sent": "已发送",
@@ -366,7 +493,7 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
                         elif method == "dm":
                             from crawler.services.dm import DMService
                             task_log(f"开始发私信，共 {len(passed)} 个达人...")
-                            dm_svc = DMService(page)
+                            dm_svc = DMService(page, captcha_event_handler=on_captcha_event)
                             dm_result = await dm_svc.send_batch(passed)
                             sent_count = dm_result.get("sent", 0)
                             task_log(
@@ -384,7 +511,7 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
                         elif method == "comment":
                             from crawler.services.comment import CommentService
                             task_log(f"开始发评论，共 {len(passed)} 个达人...")
-                            cmt_svc = CommentService(page)
+                            cmt_svc = CommentService(page, captcha_event_handler=on_captcha_event)
                             cmt_result = await cmt_svc.send_batch(passed)
                             comment_count = cmt_result.get("sent", 0)
                             task_log(
@@ -416,6 +543,7 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
                     logger.error(f"任务 {task_id} 失败：{e}")
                     err_msg = str(e)
                     _task_status[task_id]["status"] = "error"
+                    _task_status[task_id]["captcha_required"] = False
                     _task_status[task_id]["error_msg"] = err_msg
                     _task_status[task_id]["finished_at"] = datetime.now().isoformat()
                     task_log(f"❌ 任务失败：{err_msg}")
@@ -426,6 +554,12 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
                         await get_browser()
                     except Exception:
                         pass
+                    if page is not None:
+                        try:
+                            if not page.is_closed():
+                                await page.close()
+                        except Exception:
+                            pass
                     try:
                         db_id = _task_status[task_id].get("db_id")
                         if db_id:
@@ -435,7 +569,27 @@ async def run_task(req: TaskCreate, background_tasks: BackgroundTasks):
                         pass
 
     background_tasks.add_task(_run)
-    return TaskStatus(task_id=task_id, status="running", started_at=datetime.now())
+    return TaskStatus(
+        task_id=task_id,
+        status="running",
+        started_at=datetime.now(),
+        keywords=req.keywords,
+        search_type=req.search_type,
+        contact_method=req.contact_method,
+        max_per_keyword=req.max_per_keyword,
+        min_followers=req.min_followers,
+        max_followers=req.max_followers,
+        min_total_likes=req.min_total_likes,
+        max_total_likes=req.max_total_likes,
+        video_sort_type=req.video_sort_type,
+        video_publish_time=req.video_publish_time,
+        min_video_likes=req.min_video_likes,
+        min_video_collects=req.min_video_collects,
+        min_video_comments=req.min_video_comments,
+        min_video_shares=req.min_video_shares,
+        require_shop=req.require_shop,
+        captcha_required=False,
+    )
 
 
 @router.get("/tasks/{task_id}", response_model=TaskStatus, tags=["任务"])
@@ -454,14 +608,46 @@ async def get_task_status(task_id: int):
         finished_at=datetime.fromisoformat(s["finished_at"]) if s.get("finished_at") else None,
         error_msg=s.get("error_msg"),
         logs=s.get("logs", []),
+        captcha_required=s.get("captcha_required", False),
+        captcha_message=s.get("captcha_message"),
+        captcha_screenshot=s.get("captcha_screenshot"),
         keywords=s.get("keywords", []),
         search_type=s.get("search_type", "user"),
         contact_method=s.get("contact_method", "none"),
         max_per_keyword=s.get("max_per_keyword"),
-        min_followers=s.get("min_followers"),
-        min_total_likes=s.get("min_total_likes"),
-        require_shop=s.get("require_shop"),
+        min_followers=s.get("min_followers", 0),
+        max_followers=s.get("max_followers", 0),
+        min_total_likes=s.get("min_total_likes", 0),
+        max_total_likes=s.get("max_total_likes", 0),
+        video_sort_type=s.get("video_sort_type", 0),
+        video_publish_time=s.get("video_publish_time", 0),
+        min_video_likes=s.get("min_video_likes", 0),
+        min_video_collects=s.get("min_video_collects", 0),
+        min_video_comments=s.get("min_video_comments", 0),
+        min_video_shares=s.get("min_video_shares", 0),
+        require_shop=s.get("require_shop", False),
     )
+
+
+@router.get("/tasks/{task_id}/captcha-screenshot", tags=["任务"])
+async def get_task_captcha_screenshot(task_id: int):
+    """返回当前任务捕获的验证码截图，仅允许读取验证码截图目录。"""
+    if task_id not in _task_status:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    screenshot = _task_status[task_id].get("captcha_screenshot")
+    if not screenshot:
+        raise HTTPException(status_code=404, detail="当前任务没有验证码截图")
+
+    from pathlib import Path
+    from fastapi.responses import FileResponse
+    from crawler.utils.captcha import CAPTCHA_SCREENSHOT_DIR
+
+    screenshot_path = Path(screenshot).resolve()
+    screenshot_root = CAPTCHA_SCREENSHOT_DIR.resolve()
+    if not screenshot_path.is_relative_to(screenshot_root) or not screenshot_path.is_file():
+        raise HTTPException(status_code=404, detail="验证码截图不存在")
+    return FileResponse(screenshot_path, media_type="image/png")
 
 
 @router.delete("/tasks/{task_id}", tags=["任务"])

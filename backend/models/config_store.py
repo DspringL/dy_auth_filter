@@ -16,13 +16,6 @@ from crawler.utils.config import get as yaml_get
 # 每个 key 对应 settings.yaml 中的路径（用于降级读取默认值）
 
 CONFIG_KEYS: dict[str, dict] = {
-    # 筛选规则（粉丝数/点赞数均为实际数量，不再以万为单位）
-    "filter.min_followers":    {"yaml": "filter.min_followers",    "type": "int",   "default": 10000},
-    "filter.max_followers":    {"yaml": "filter.max_followers",    "type": "int",   "default": 0},
-    "filter.min_total_likes":  {"yaml": "filter.min_total_likes",  "type": "int",   "default": 10000},
-    "filter.require_shop":     {"yaml": "filter.require_shop_window", "type": "bool", "default": False},
-    "filter.min_videos":       {"yaml": "filter.min_recent_videos","type": "int",   "default": 0},
-
     # 私信配置
     "dm.template":             {"yaml": "dm.template",             "type": "str",   "default": "你好 {nickname}，我是某某品牌的商务负责人，看了您的内容非常专业，想和您洽谈品牌合作事宜。有意向的话请留下联系方式，期待合作！"},
     "dm.daily_limit":          {"yaml": "dm.daily_limit",          "type": "int",   "default": 20},

@@ -49,7 +49,7 @@
             <el-icon size="28" color="#faad14"><Setting /></el-icon>
             <div>
               <div class="shortcut-title">系统设置</div>
-              <div class="shortcut-desc">修改筛选规则、私信和评论模板</div>
+              <div class="shortcut-desc">修改私信和评论模板及发送规则</div>
             </div>
           </div>
         </el-card>

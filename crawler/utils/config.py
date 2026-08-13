@@ -8,18 +8,14 @@ from pathlib import Path
 from loguru import logger
 
 # ── 项目根目录 ──────────────────────────────────────────────────────────────
-# PyInstaller 打包后 sys.frozen=True，此时使用 Rust 传入的 DYAUTH_RESOURCE_DIR
-# 指向 app bundle 内的资源目录（包含 config/ 和 data/）
-# 开发模式下直接用文件系统路径
-if getattr(sys, "frozen", False):
-    # 打包版：优先读环境变量，fallback 到可执行文件同级目录
-    _resource = os.environ.get("DYAUTH_RESOURCE_DIR", "")
-    if _resource:
-        ROOT_DIR = Path(_resource)
-    else:
-        ROOT_DIR = Path(sys.executable).parent
+# 桌面壳和诊断模式都可以通过 DYAUTH_RESOURCE_DIR 指向真实运行数据目录；
+# 未传入时，打包版回退到可执行文件目录，开发版使用仓库目录。
+_resource = os.environ.get("DYAUTH_RESOURCE_DIR", "")
+if _resource:
+    ROOT_DIR = Path(_resource)
+elif getattr(sys, "frozen", False):
+    ROOT_DIR = Path(sys.executable).parent
 else:
-    # 开发版
     ROOT_DIR = Path(__file__).parent.parent.parent
 
 CONFIG_FILE = ROOT_DIR / "config" / "settings.yaml"
@@ -52,7 +48,7 @@ search:
     video_warmup_wait: 8
     video_scroll_interval_min: 4.0
     video_scroll_interval_max: 7.0
-    captcha_wait: 90
+    captcha_wait: 300
     captcha_max_retry: 3
 filter:
   min_followers: 1000

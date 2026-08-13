@@ -24,6 +24,13 @@ from crawler.services.browser_actions import (
     render_single_line,
 )
 from crawler.utils.config import get, ROOT_DIR
+from crawler.utils.captcha import (
+    CaptchaBlockedError,
+    CaptchaEventHandler,
+    handle_captcha_if_present,
+    latest_captcha_screenshot,
+    navigate_with_captcha_guard,
+)
 
 # 仅 SENT_FILE 保持模块级常量（路径不会被前端修改）
 SENT_FILE: Path = ROOT_DIR / get("dm.sent_record_file", "data/dm_sent.json")
@@ -104,9 +111,21 @@ class DMService:
     page 必须是已登录抖音的 CloakBrowser Page 对象。
     """
 
-    def __init__(self, page: Page):
+    def __init__(
+        self,
+        page: Page,
+        captcha_event_handler: CaptchaEventHandler | None = None,
+    ):
         self._page = page
         self._record = SentRecord()
+        self._captcha_event_handler = captcha_event_handler
+
+    async def _pause_for_captcha(self, reason: str) -> bool:
+        return await handle_captcha_if_present(
+            self._page,
+            reason=reason,
+            event_handler=getattr(self, "_captcha_event_handler", None),
+        )
 
     async def send_batch(self, profiles: list[KOLProfile]) -> dict:
         """
@@ -210,11 +229,22 @@ class DMService:
             current_url = page.url.split("?", 1)[0].rstrip("/")
             if current_url != profile_url.split("?", 1)[0].rstrip("/"):
                 logger.info(f"导航到主页：{profile_url}")
-                await page.goto(profile_url, wait_until="domcontentloaded", timeout=30_000)
+                ok = await navigate_with_captcha_guard(
+                    page,
+                    profile_url,
+                    timeout=30_000,
+                    event_handler=getattr(self, "_captcha_event_handler", None),
+                )
+                if not ok:
+                    raise CaptchaBlockedError(
+                        "私信主页被验证码阻止"
+                        f"；截图：{latest_captcha_screenshot() or '未生成'}"
+                    )
             else:
                 logger.debug(f"[DM] 复用已打开的达人主页：{nickname}")
 
             # ── 点击「发私信」按钮 ───────────────────────────────────────────
+            await self._pause_for_captcha("dm-before-button")
             dm_btn = await self._find_dm_button(page, timeout=8.0)
             if not profile.latest_aweme_id:
                 profile.latest_aweme_id = await first_video_id(page)
@@ -225,6 +255,7 @@ class DMService:
                 return False
 
             await dm_btn.click()
+            await self._pause_for_captcha("dm-after-button")
 
             # ── 输入消息 ─────────────────────────────────────────────────────
             input_selectors = [
@@ -257,6 +288,7 @@ class DMService:
                 '[class*="sendBtn"]',
             ]
             try:
+                await self._pause_for_captcha("dm-before-send")
                 async with page.expect_response(
                     lambda response: "/v1/message/send" in response.url,
                     timeout=10_000,
@@ -284,6 +316,8 @@ class DMService:
             logger.info(f"[DM] 单条操作耗时 {time.monotonic() - started:.2f}s")
             return True
 
+        except CaptchaBlockedError:
+            raise
         except PWTimeout:
             logger.error(f"「{nickname}」操作超时")
             return False

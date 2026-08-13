@@ -11,6 +11,7 @@ from crawler.services.comment import _get_interval as comment_interval
 from crawler.services.dm import DMService, _get_daily_limit as dm_daily_limit
 from crawler.services.dm import _get_interval as dm_interval
 from crawler.services.search import KOLProfile
+from crawler.utils.captcha import CaptchaBlockedError
 
 
 ContactStats = dict[str, int]
@@ -152,6 +153,8 @@ class CombinedContactService:
 
         try:
             success = await self._dm._send_one(profile)
+        except CaptchaBlockedError:
+            raise
         except Exception as exc:
             logger.exception(f"私信异常，继续处理评论：{exc}")
             success = False
@@ -177,6 +180,8 @@ class CombinedContactService:
 
         try:
             aweme_id, success = await self._comment._comment_one(profile)
+        except CaptchaBlockedError:
+            raise
         except Exception as exc:
             logger.exception(f"评论异常，继续处理下一位达人：{exc}")
             aweme_id, success = "", False

@@ -1,6 +1,7 @@
 # 浏览器自动化
-cloakbrowser>=0.5.3
+cloakbrowser>=0.5.7
 playwright>=1.62.0
+patchright>=1.61.2
 
 # HTTP 请求
 httpx[http2]>=0.27.0

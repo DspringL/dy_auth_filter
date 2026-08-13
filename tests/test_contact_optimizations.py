@@ -6,6 +6,7 @@ from crawler.services.comment import CommentService
 from crawler.services.contact import CombinedContactService
 from crawler.services.dm import DMService
 from crawler.services.search import KOLProfile
+from crawler.utils.captcha import CaptchaBlockedError
 
 
 class _DMRecord:
@@ -55,6 +56,28 @@ class BrowserActionTests(unittest.TestCase):
 
 
 class BatchSchedulingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_combined_contact_pauses_instead_of_swallowing_captcha(self):
+        dm_service = object.__new__(DMService)
+        dm_service._record = _DMRecord()
+        dm_service._send_one = AsyncMock(
+            side_effect=CaptchaBlockedError("需要人工验证")
+        )
+        comment_service = object.__new__(CommentService)
+        comment_service._record = _CommentRecord()
+        comment_service._comment_one = AsyncMock(return_value=("aweme-a", True))
+
+        with (
+            patch("crawler.services.contact.dm_daily_limit", return_value=10),
+            patch("crawler.services.contact.comment_daily_limit", return_value=10),
+        ):
+            with self.assertRaisesRegex(CaptchaBlockedError, "需要人工验证"):
+                await CombinedContactService(
+                    dm_service,
+                    comment_service,
+                ).send_batch([_profile("a")])
+
+        comment_service._comment_one.assert_not_awaited()
+
     async def test_combined_contact_finishes_both_actions_before_next_profile(self):
         events: list[str] = []
         progress: list[tuple[str, str, int, int]] = []

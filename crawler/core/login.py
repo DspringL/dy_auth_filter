@@ -25,6 +25,7 @@ LOGIN_COOKIES = ["sessionid", "sessionid_ss", "uid_tt", "uid_tt_ss"]
 
 # Cookie 持久化路径
 COOKIE_FILE = ROOT_DIR / get("douyin.cookie_file", "data/cookies.json")
+STORAGE_STATE_FILE = ROOT_DIR / "data" / "storage_state.json"
 
 # 扫码等待超时（秒）
 QRCODE_TIMEOUT = 180
@@ -247,6 +248,10 @@ async def do_qrcode_login(manager: BrowserManager) -> bool:
             await _close_login_page()
             return False
 
+    except asyncio.CancelledError:
+        logger.info("扫码登录流程已取消")
+        await _close_login_page()
+        raise
     except Exception as e:
         logger.error(f"二维码登录流程异常：{e}")
         await _close_login_page()
@@ -268,6 +273,17 @@ async def _save_cookies(manager: BrowserManager):
         await manager.save_storage_state()
     except Exception as e:
         logger.warning(f"保存 storage state 失败（不影响登录）：{e}")
+
+
+async def logout(manager: BrowserManager) -> None:
+    """退出抖音登录并移除所有由服务持久化的鉴权状态。"""
+    await manager.clear_auth_state()
+    for path in (COOKIE_FILE, STORAGE_STATE_FILE):
+        try:
+            path.unlink(missing_ok=True)
+        except Exception as exc:
+            logger.warning(f"删除登录态文件失败 {path}：{exc}")
+    logger.info("抖音账号已退出登录")
 
 
 def load_cookies_as_header() -> str:

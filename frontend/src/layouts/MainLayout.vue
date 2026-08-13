@@ -75,6 +75,17 @@
             扫码登录
           </el-button>
 
+          <el-button
+            v-else
+            type="danger"
+            plain
+            size="small"
+            :loading="store.logoutLoading"
+            @click="handleLogout"
+          >
+            退出登录
+          </el-button>
+
           <el-button size="small" :icon="Refresh" circle @click="refreshStatus" />
         </div>
       </el-header>
@@ -90,7 +101,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAppStore } from '@/stores/app.js'
 
 const store = useAppStore()
@@ -140,6 +151,24 @@ async function handleLogin() {
 async function refreshStatus() {
   await store.fetchLoginStatus()
   await store.fetchStats()
+}
+
+async function handleLogout() {
+  try {
+    await ElMessageBox.confirm(
+      '退出后将清除服务浏览器中的抖音登录态，后续任务需要重新扫码登录。',
+      '确认退出登录',
+      { type: 'warning', confirmButtonText: '退出登录', cancelButtonText: '取消' },
+    )
+    if (loginPollTimer) {
+      clearInterval(loginPollTimer)
+      loginPollTimer = null
+    }
+    await store.logout()
+    ElMessage.success('已退出登录')
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') throw error
+  }
 }
 </script>
 

@@ -19,6 +19,23 @@ async def upsert_kol(session: AsyncSession, profile: KOLProfile) -> KOL:
     插入或更新达人记录（按 sec_user_id upsert）。
     已存在的记录更新数据指标，不覆盖 dm_status。
     """
+    update_values = {
+        "nickname":           profile.nickname,
+        "signature":          profile.signature,
+        "avatar_url":         profile.avatar_url,
+        "follower_count":     profile.follower_count,
+        "following_count":    profile.following_count,
+        "aweme_count":        profile.aweme_count,
+        "has_shop":           profile.has_shop,
+        "commerce_user_level":profile.commerce_user_level,
+        "ip_location":        profile.ip_location,
+        "updated_at":         datetime.now(),
+    }
+    # 作品搜索响应不提供作者的聚合总点赞（通常固定为 0），不要因此覆盖
+    # 用户搜索或主页采集到的有效值。
+    if not profile.latest_aweme_id or profile.total_favorited > 0:
+        update_values["total_favorited"] = profile.total_favorited
+
     stmt = sqlite_insert(KOL).values(
         sec_user_id        = profile.sec_user_id,
         uid                = profile.uid,
@@ -39,19 +56,7 @@ async def upsert_kol(session: AsyncSession, profile: KOLProfile) -> KOL:
         collected_at       = datetime.fromisoformat(profile.collected_at) if profile.collected_at else datetime.now(),
     ).on_conflict_do_update(
         index_elements=["sec_user_id"],
-        set_={
-            "nickname":           profile.nickname,
-            "signature":          profile.signature,
-            "avatar_url":         profile.avatar_url,
-            "follower_count":     profile.follower_count,
-            "following_count":    profile.following_count,
-            "total_favorited":    profile.total_favorited,
-            "aweme_count":        profile.aweme_count,
-            "has_shop":           profile.has_shop,
-            "commerce_user_level":profile.commerce_user_level,
-            "ip_location":        profile.ip_location,
-            "updated_at":         datetime.now(),
-        }
+        set_=update_values,
     )
     await session.execute(stmt)
     await session.flush()

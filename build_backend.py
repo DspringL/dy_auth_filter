@@ -109,6 +109,7 @@ def build():
         "--hidden-import", "sqlalchemy.dialects.sqlite",
         "--collect-all", "cloakbrowser",
         "--collect-all", "playwright",
+        "--collect-all", "patchright",
     ]
 
     print("[build_backend] 正在编译后端 sidecar（可能需要几分钟）...")

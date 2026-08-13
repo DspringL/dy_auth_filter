@@ -7,7 +7,7 @@
   - 通过 Playwright response 事件拦截 XHR 响应
 
 搜索用户：拦截 /aweme/v1/web/discover/search/?search_channel=user_search_channel
-搜索作品：拦截 /aweme/v1/web/search/item/（aweme_list 字段）
+搜索作品：拦截 /aweme/v1/web/search/item/（data[].aweme_info 字段）
 """
 import asyncio
 import json
@@ -15,16 +15,35 @@ import random
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import AsyncGenerator
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 
 from loguru import logger
 from playwright.async_api import Page, Response
 
+from crawler.utils.captcha import (
+    CaptchaBlockedError,
+    CaptchaEventHandler,
+    handle_captcha_if_present,
+    latest_captcha_screenshot,
+    wait_for_queue_with_captcha,
+)
 from crawler.utils.config import get
 
 # ── 接口路径 ───────────────────────────────────────────────────────────────────
 USER_SEARCH_API  = "/aweme/v1/web/discover/search/"
 VIDEO_SEARCH_API = "/aweme/v1/web/search/item/"
+
+VIDEO_SORT_LABELS = {
+    0: "综合排序",
+    1: "最多点赞",
+    2: "最新发布",
+}
+VIDEO_PUBLISH_TIME_LABELS = {
+    0: "不限",
+    1: "一天内",
+    7: "一周内",
+    180: "半年内",
+}
 
 # ── 反爬节奏配置（从 settings.yaml 读取，避免触发验证码） ──────────────────────
 def _acfg(key: str, default: float) -> float:
@@ -54,6 +73,12 @@ class KOLProfile:
     # 当前任务内缓存的最新作品 ID。私信访问主页时顺带补齐；不入库，仅用于
     # “私信 + 评论”流程避免评论阶段再次打开达人主页。
     latest_aweme_id: str = ""
+    # 搜索作品任务内的作品指标。不入达人表，仅用于作品筛选与联系目标定位。
+    video_create_time: int = 0
+    video_like_count: int = 0
+    video_collect_count: int = 0
+    video_comment_count: int = 0
+    video_share_count: int = 0
     ip_location: str = ""
     search_keyword: str = ""
     collected_at: str = ""
@@ -67,11 +92,121 @@ class KOLProfile:
 class DouyinSearchService:
     """通过浏览器自动化搜索抖音用户或视频作者"""
 
-    def __init__(self, page: Page):
+    def __init__(
+        self,
+        page: Page,
+        captcha_event_handler: CaptchaEventHandler | None = None,
+    ):
         self._page = page
+        self._captcha_event_handler = captcha_event_handler
 
     async def close(self):
         pass
+
+    async def _wait_for_result(
+        self,
+        queue: asyncio.Queue,
+        timeout: float,
+        reason: str,
+    ):
+        return await wait_for_queue_with_captcha(
+            self._page,
+            queue,
+            timeout=timeout,
+            reason=reason,
+            event_handler=self._captcha_event_handler,
+        )
+
+    async def _pause_for_captcha(self, reason: str) -> bool:
+        return await handle_captcha_if_present(
+            self._page,
+            reason=reason,
+            event_handler=self._captcha_event_handler,
+        )
+
+    @staticmethod
+    def _extract_video_items(data: dict) -> list[dict]:
+        """兼容新旧响应结构，优先读取当前网页端的 data[].aweme_info。"""
+        nested = [
+            item.get("aweme_info")
+            for item in (data.get("data") or [])
+            if isinstance(item, dict) and isinstance(item.get("aweme_info"), dict)
+        ]
+        if nested:
+            return nested
+        return [item for item in (data.get("aweme_list") or []) if isinstance(item, dict)]
+
+    @staticmethod
+    def _video_response_matches_filters(
+        url: str,
+        sort_type: int,
+        publish_time: int,
+    ) -> bool:
+        query = parse_qs(urlparse(url).query)
+        actual_sort = int((query.get("sort_type") or [0])[0] or 0)
+        actual_publish = int((query.get("publish_time") or [0])[0] or 0)
+        return actual_sort == sort_type and actual_publish == publish_time
+
+    @staticmethod
+    async def _click_visible_text(page: Page, text: str) -> bool:
+        locator = page.get_by_text(text, exact=True)
+        for index in range(await locator.count() - 1, -1, -1):
+            candidate = locator.nth(index)
+            try:
+                if await candidate.is_visible():
+                    await candidate.click()
+                    return True
+            except Exception:
+                continue
+        return False
+
+    @staticmethod
+    async def _hover_visible_text(page: Page, text: str) -> bool:
+        locator = page.get_by_text(text, exact=True)
+        for index in range(await locator.count() - 1, -1, -1):
+            candidate = locator.nth(index)
+            try:
+                if await candidate.is_visible():
+                    await candidate.hover()
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def _apply_video_filters(
+        self,
+        sort_type: int,
+        publish_time: int,
+    ) -> None:
+        """通过网页原生筛选面板触发带签名的筛选请求。"""
+        if sort_type == 0 and publish_time == 0:
+            return
+
+        async def open_filter_panel() -> None:
+            # 抖音当前筛选面板由 hover 打开，click 不会展开选项。
+            if not await self._hover_visible_text(self._page, "筛选"):
+                raise RuntimeError("未找到抖音作品搜索的「筛选」入口")
+            await asyncio.sleep(0.5)
+
+        await open_filter_panel()
+        selections = []
+        if sort_type:
+            selections.append(VIDEO_SORT_LABELS[sort_type])
+        if publish_time:
+            selections.append(VIDEO_PUBLISH_TIME_LABELS[publish_time])
+
+        for label in selections:
+            if not await self._click_visible_text(self._page, label):
+                # 部分版本每选一项会收起面板，重新打开后再试一次。
+                await open_filter_panel()
+                if not await self._click_visible_text(self._page, label):
+                    raise RuntimeError(f"未找到抖音作品筛选项「{label}」")
+            await asyncio.sleep(0.6)
+
+        # 有的版本即时生效，有的版本需要确认；只在按钮可见时点击。
+        for confirm_text in ("确定", "确认"):
+            if await self._click_visible_text(self._page, confirm_text):
+                break
 
     # ── 搜索用户（单关键词）────────────────────────────────────────────────────
 
@@ -118,12 +253,23 @@ class DouyinSearchService:
                 pass
 
             from crawler.utils.captcha import navigate_with_captcha_guard
-            ok = await navigate_with_captcha_guard(page, url)
+            ok = await navigate_with_captcha_guard(
+                page,
+                url,
+                event_handler=self._captcha_event_handler,
+            )
             if not ok:
-                logger.error(f"[用户搜索]「{keyword}」导航失败（验证码）")
-                return
+                screenshot = latest_captcha_screenshot()
+                raise CaptchaBlockedError(
+                    f"用户搜索被验证码阻止，请在浏览器中手动完成验证"
+                    f"；截图：{screenshot or '未生成'}"
+                )
 
-            result = await asyncio.wait_for(queue.get(), timeout=15.0)
+            result = await self._wait_for_result(
+                queue,
+                timeout=15.0,
+                reason="user-search-initial",
+            )
             if not result:
                 logger.error(f"[用户搜索]「{keyword}」首页失败")
                 return
@@ -142,10 +288,14 @@ class DouyinSearchService:
             while total_fetched < max_count:
                 page_num += 1
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await asyncio.sleep(_acfg('scroll_interval_min',3.0), _acfg('scroll_interval_max',6.0))
+                await asyncio.sleep(random.uniform(_acfg('scroll_interval_min',3.0), _acfg('scroll_interval_max',6.0)))
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 try:
-                    nr = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    nr = await self._wait_for_result(
+                        queue,
+                        timeout=15.0,
+                        reason=f"user-search-scroll-{page_num}",
+                    )
                 except asyncio.TimeoutError:
                     break
                 if not nr or not nr.get("users"):
@@ -159,8 +309,10 @@ class DouyinSearchService:
                         total_fetched += 1
                 if not nr["has_more"]:
                     break
-                await asyncio.sleep(_acfg('scroll_interval_min',3.0), _acfg('scroll_interval_max',6.0))
+                await asyncio.sleep(random.uniform(_acfg('scroll_interval_min',3.0), _acfg('scroll_interval_max',6.0)))
 
+        except CaptchaBlockedError:
+            raise
         except asyncio.TimeoutError:
             logger.error(f"[用户搜索]「{keyword}」XHR 超时")
         except Exception as e:
@@ -178,7 +330,7 @@ class DouyinSearchService:
                 if p.sec_user_id not in all_profiles:
                     all_profiles[p.sec_user_id] = p
             if idx < len(keywords) - 1:
-                await asyncio.sleep(_acfg('keyword_interval_min',8.0), _acfg('keyword_interval_max',15.0))
+                await asyncio.sleep(random.uniform(_acfg('keyword_interval_min',8.0), _acfg('keyword_interval_max',15.0)))
         logger.info(f"批量搜索完成，去重后共 {len(all_profiles)} 位用户")
         return list(all_profiles.values())
 
@@ -188,28 +340,33 @@ class DouyinSearchService:
         self,
         keyword: str,
         max_count: int = 50,
+        sort_type: int = 0,
+        publish_time: int = 0,
     ) -> AsyncGenerator[KOLProfile, None]:
         """
         搜索视频作品，提取作者信息转为 KOLProfile。
 
         策略（根据实际抓包确认的接口）：
           1. 先导航到用户搜索页（?type=user）确保登录 Cookie 生效
-          2. 切换到综合搜索（?type=general），同时拦截视频接口
-             - 视频接口：/aweme/v1/web/search/item/（含 aweme_list）
-             - 备用接口：/aweme/v1/web/discover/search/ 中含 aweme_list 的响应
-          3. 翻页同样走滚动触发
-        按 sec_user_id 去重，同一作者多视频只保留一次。
+          2. 切换到作品搜索并拦截 /aweme/v1/web/search/item/
+          3. 非默认排序或发布时间通过原生筛选面板触发，保留网页签名
+          4. 翻页同样走滚动触发
+        每条作品都返回，作品指标筛选后再按作者去重，避免漏掉同一作者中
+        后出现但符合条件的作品。
         """
-        logger.info(f"[视频搜索] 开始：「{keyword}」，目标作者 {max_count} 条")
+        logger.info(
+            f"[视频搜索] 开始：「{keyword}」，目标作品 {max_count} 条，"
+            f"排序={VIDEO_SORT_LABELS[sort_type]}，"
+            f"发布时间={VIDEO_PUBLISH_TIME_LABELS[publish_time]}"
+        )
         page = self._page
-        seen_authors: set[str] = set()
         total_fetched = 0
         page_num = 0
         queue: asyncio.Queue = asyncio.Queue()
 
         async def on_response(response: Response):
             url = response.url
-            if VIDEO_SEARCH_API not in url and USER_SEARCH_API not in url:
+            if VIDEO_SEARCH_API not in url:
                 return
             if response.status != 200:
                 return
@@ -218,18 +375,9 @@ class DouyinSearchService:
                 data = json.loads(body)
                 if data.get("status_code", -1) != 0:
                     return
-                # 调试：首次打印完整字段名，找视频数据所在字段
-                if not getattr(on_response, '_printed', False):
-                    on_response._printed = True
-                    logger.info(f"[视频搜索] 接口字段列表: {list(data.keys())}")
-                    # 打印非空字段的类型和长度
-                    for k, v in data.items():
-                        if v and k not in ('extra', 'log_pb', 'guide_search_words'):
-                            vinfo = f"list[{len(v)}]" if isinstance(v, list) else type(v).__name__
-                            logger.info(f"[视频搜索]   data[{k!r}] = {vinfo}")
-                if "aweme_list" not in data:
+                if not self._video_response_matches_filters(url, sort_type, publish_time):
                     return
-                aweme_list = data.get("aweme_list") or []
+                aweme_list = self._extract_video_items(data)
                 has_more = bool(data.get("has_more", False))
                 if aweme_list:
                     logger.info(f"[视频搜索] 拦截 {len(aweme_list)} 条视频，has_more={has_more}")
@@ -255,9 +403,17 @@ class DouyinSearchService:
 
             # Step 2：用户搜索页热身（带验证码保护）
             user_url = f"https://www.douyin.com/search/{encoded_kw}?type=user"
-            ok = await navigate_with_captcha_guard(page, user_url)
+            ok = await navigate_with_captcha_guard(
+                page,
+                user_url,
+                event_handler=self._captcha_event_handler,
+            )
             if not ok:
-                logger.warning(f"[视频搜索] 热身页导航失败，继续尝试")
+                screenshot = latest_captcha_screenshot()
+                raise CaptchaBlockedError(
+                    f"作品搜索热身页被验证码阻止，请在浏览器中手动完成验证"
+                    f"；截图：{screenshot or '未生成'}"
+                )
             # 热身页充分等待
             await asyncio.sleep(_acfg("video_warmup_wait", 8))
             # 清空用户搜索的 XHR
@@ -267,25 +423,44 @@ class DouyinSearchService:
                 except Exception:
                     break
 
-            # Step 2：导航到视频搜索页（带验证码检测保护）
-            from crawler.utils.captcha import navigate_with_captcha_guard, is_captcha_present
+            # Step 3：导航到视频搜索页（带验证码检测保护）
             video_url = f"https://www.douyin.com/search/{encoded_kw}?type=video"
             logger.info(f"[视频搜索] 导航：{video_url}")
-            ok = await navigate_with_captcha_guard(page, video_url)
+            ok = await navigate_with_captcha_guard(
+                page,
+                video_url,
+                event_handler=self._captcha_event_handler,
+            )
             if not ok:
-                logger.error(f"[视频搜索]「{keyword}」导航失败（可能被验证码阻止）")
-                return
+                screenshot = latest_captcha_screenshot()
+                raise CaptchaBlockedError(
+                    f"作品搜索被验证码阻止，请在浏览器中手动完成验证"
+                    f"；截图：{screenshot or '未生成'}"
+                )
 
             # 等待页面视频卡片完全渲染（骨架屏消失）
             await asyncio.sleep(_acfg('page_load_wait',5))
 
+            # 自定义条件必须通过页面交互触发，XHR 才会带上 sort_type、
+            # publish_time 以及由网页生成的签名参数。
+            await self._pause_for_captcha("video-search-before-filter")
+            await self._apply_video_filters(sort_type, publish_time)
+
             # 等待视频 XHR
             try:
-                result = await asyncio.wait_for(queue.get(), timeout=20.0)
+                result = await self._wait_for_result(
+                    queue,
+                    timeout=20.0,
+                    reason="video-search-initial",
+                )
             except asyncio.TimeoutError:
                 result = None
 
             if not result:
+                if sort_type or publish_time:
+                    raise RuntimeError(
+                        "已操作抖音筛选面板，但未捕获到匹配筛选条件的作品请求"
+                    )
                 logger.error(f"[视频搜索]「{keyword}」无法获取视频数据")
                 return
 
@@ -295,10 +470,14 @@ class DouyinSearchService:
                 retry += 1
                 logger.info(f"[视频搜索] 首帧为空（预热），触发滚动等待真实数据（第 {retry} 次）")
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await asyncio.sleep(_acfg('scroll_interval_min',3.0), _acfg('scroll_interval_max',6.0))
+                await asyncio.sleep(random.uniform(_acfg('scroll_interval_min',3.0), _acfg('scroll_interval_max',6.0)))
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 try:
-                    result = await asyncio.wait_for(queue.get(), timeout=12.0)
+                    result = await self._wait_for_result(
+                        queue,
+                        timeout=12.0,
+                        reason=f"video-search-warmup-scroll-{retry}",
+                    )
                 except asyncio.TimeoutError:
                     result = None
                     break
@@ -311,8 +490,7 @@ class DouyinSearchService:
                 if total_fetched >= max_count:
                     return
                 p = self._parse_video_author(video, keyword)
-                if p.sec_user_id and p.sec_user_id not in seen_authors:
-                    seen_authors.add(p.sec_user_id)
+                if p.sec_user_id:
                     yield p
                     total_fetched += 1
 
@@ -322,10 +500,14 @@ class DouyinSearchService:
             while total_fetched < max_count:
                 page_num += 1
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await asyncio.sleep(_acfg('scroll_interval_min',3.0), _acfg('scroll_interval_max',6.0))
+                await asyncio.sleep(random.uniform(_acfg('scroll_interval_min',3.0), _acfg('scroll_interval_max',6.0)))
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 try:
-                    nr = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    nr = await self._wait_for_result(
+                        queue,
+                        timeout=15.0,
+                        reason=f"video-search-scroll-{page_num}",
+                    )
                 except asyncio.TimeoutError:
                     break
                 if not nr or not nr.get("videos"):
@@ -334,34 +516,48 @@ class DouyinSearchService:
                     if total_fetched >= max_count:
                         return
                     p = self._parse_video_author(video, keyword)
-                    if p.sec_user_id and p.sec_user_id not in seen_authors:
-                        seen_authors.add(p.sec_user_id)
+                    if p.sec_user_id:
                         yield p
                         total_fetched += 1
                 if not nr["has_more"]:
                     break
-                await asyncio.sleep(_acfg('scroll_interval_min',3.0), _acfg('scroll_interval_max',6.0))
+                await asyncio.sleep(random.uniform(_acfg('scroll_interval_min',3.0), _acfg('scroll_interval_max',6.0)))
 
+        except CaptchaBlockedError:
+            raise
+        except RuntimeError as e:
+            logger.error(f"[视频搜索]「{keyword}」筛选失败：{e}")
+            raise
         except asyncio.TimeoutError:
             logger.error(f"[视频搜索]「{keyword}」XHR 超时")
         except Exception as e:
             logger.error(f"[视频搜索]「{keyword}」异常：{e}")
         finally:
             page.remove_listener("response", on_response)
-            logger.info(f"[视频搜索]「{keyword}」完成，共获取 {total_fetched} 位作者")
+            logger.info(f"[视频搜索]「{keyword}」完成，共获取 {total_fetched} 条作品")
 
-    async def batch_search_videos(self, keywords: list[str], max_per_keyword: int = 50) -> list[KOLProfile]:
-        """多关键词视频搜索，提取不重复作者"""
-        all_profiles: dict[str, KOLProfile] = {}
+    async def batch_search_videos(
+        self,
+        keywords: list[str],
+        max_per_keyword: int = 50,
+        sort_type: int = 0,
+        publish_time: int = 0,
+    ) -> list[KOLProfile]:
+        """多关键词作品搜索，保留作品维度结果供后续筛选。"""
+        all_profiles: list[KOLProfile] = []
         for idx, kw in enumerate(keywords):
             logger.info(f"[视频批量搜索] 关键词 {idx+1}/{len(keywords)}：「{kw}」")
-            async for p in self.search_videos(kw, max_per_keyword):
-                if p.sec_user_id not in all_profiles:
-                    all_profiles[p.sec_user_id] = p
+            async for p in self.search_videos(
+                kw,
+                max_per_keyword,
+                sort_type=sort_type,
+                publish_time=publish_time,
+            ):
+                all_profiles.append(p)
             if idx < len(keywords) - 1:
-                await asyncio.sleep(_acfg('keyword_interval_min',8.0), _acfg('keyword_interval_max',15.0))
-        logger.info(f"[视频批量搜索] 完成，去重后共 {len(all_profiles)} 位作者")
-        return list(all_profiles.values())
+                await asyncio.sleep(random.uniform(_acfg('keyword_interval_min',8.0), _acfg('keyword_interval_max',15.0)))
+        logger.info(f"[视频批量搜索] 完成，共 {len(all_profiles)} 条作品")
+        return all_profiles
 
     # ── 数据解析 ──────────────────────────────────────────────────────────────
 
@@ -428,6 +624,7 @@ class DouyinSearchService:
             or commerce_level > 0
         )
         avatar_url = ""
+        statistics = video.get("statistics") or {}
         for av_key in ("avatar_thumb", "avatar_medium", "avatar_larger"):
             av = author.get(av_key)
             if isinstance(av, dict):
@@ -450,6 +647,12 @@ class DouyinSearchService:
             has_shop            = has_shop,
             short_id            = author.get("short_id") or uid,
             profile_url         = f"https://www.douyin.com/user/{sec_uid}" if sec_uid else "",
+            latest_aweme_id     = str(video.get("aweme_id") or ""),
+            video_create_time   = int(video.get("create_time") or 0),
+            video_like_count    = int(statistics.get("digg_count") or 0),
+            video_collect_count = int(statistics.get("collect_count") or 0),
+            video_comment_count = int(statistics.get("comment_count") or 0),
+            video_share_count   = int(statistics.get("share_count") or 0),
             ip_location         = author.get("ip_location") or "",
             search_keyword      = keyword,
             collected_at        = datetime.now().isoformat(timespec="seconds"),
