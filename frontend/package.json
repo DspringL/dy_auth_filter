@@ -16,7 +16,7 @@
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "@tauri-apps/plugin-notification": "^2.3.3",
     "@tauri-apps/plugin-shell": "^2.3.5",
-    "axios": "^1.7.0",
+    "axios": "^1.20.0",
     "dayjs": "^1.11.11",
     "element-plus": "^2.7.0",
     "nprogress": "^0.2.0",
